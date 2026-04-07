@@ -8,8 +8,7 @@
 This project demonstrates the Tanzu Data Intelligence (TDI) stack as a unified
 modern data warehouse platform for insider threat detection. It targets enterprise
 and federal audiences and uses a Medallion architecture (Bronze → Silver → Gold)
-orchestrated via Apache Airflow, deployed on Greenplum 7.x, and an AI app on Tanzu Application
-Service (Cloud Foundry).
+orchestrated via Apache Airflow, deployed on Greenplum 7.x
 
 ### Demo Narrative Arc
 
