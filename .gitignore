@@ -1,0 +1,49 @@
+# pip install artifacts (=version files created by bad pip invocations)
+=*
+
+# Credentials — never commit
+.env
+config/pxf-minio-server/s3-site.xml
+config/s3.conf
+
+# Claude Code internal settings
+.claude/
+
+# Generated data outputs (created by s1_generate_raw.py at runtime)
+data/bronze/*
+data/silver/*
+data/gold/*
+!data/bronze/.gitkeep
+!data/silver/.gitkeep
+!data/gold/.gitkeep
+
+# Old agent-named scripts (superseded by s0-s6 naming)
+agents/agent0_orchestrator.py
+agents/agent1_bronze.py
+agents/agent2_silver.py
+agents/agent3_gold.py
+agents/agent4_platform.py
+agents/agent5_validation.py
+agents/agent6_analytics.py
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+
+# Airflow
+logs/
+airflow.db
+airflow.cfg
+
+# Reports (generated at runtime by s6_report_analytics.py)
+reports/validation_report.md
+reports/executive_analytics.md
+
+# Schema docs (generated at runtime)
+schema/bronze_schema_map.json
+schema/silver_lineage_map.json
+schema/feature_dictionary.json

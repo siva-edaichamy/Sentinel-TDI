@@ -1,0 +1,36 @@
+# manifest.yml — Cloud Foundry TAS deployment manifest
+# Insider Threat Synthetic Data Pipeline
+
+applications:
+  - name: insider-threat-pipeline
+    memory: 2G
+    disk_quota: 4G
+    instances: 1
+    buildpacks:
+      - python_buildpack
+    command: python agents/s0_orchestrate.py --env prod --log-level INFO
+    env:
+      RANDOM_SEED: "42"
+      EMPLOYEE_COUNT: "500"
+      TIMELINE_DAYS: "90"
+      TIMELINE_START_DATE: "2026-01-01"
+      ROLLING_WINDOW: "7"
+      GP_HOST: "localhost"
+      GP_PORT: "5432"
+      GP_DB: "gpadmin"
+      GP_USER: "gpadmin"
+      # GP_PASSWORD: bind via CF user-provided service or CredHub
+      AIRFLOW_DAG_OWNER: airflow
+    services:
+      - greenplum-insider-threat   # CF service instance binding GP credentials
+
+  - name: insider-threat-airflow
+    memory: 1G
+    disk_quota: 2G
+    instances: 1
+    buildpacks:
+      - python_buildpack
+    command: airflow webserver
+    env:
+      AIRFLOW__CORE__DAGS_FOLDER: /home/vcap/app/dags
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor

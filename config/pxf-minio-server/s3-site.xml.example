@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+  <!-- MinIO endpoint — use http:// for non-SSL MinIO -->
+  <property>
+    <name>fs.s3a.endpoint</name>
+    <value>http://127.0.0.1:9000</value>
+  </property>
+
+  <property>
+    <name>fs.s3a.access.key</name>
+    <value>YOUR_MINIO_ACCESS_KEY</value>
+  </property>
+
+  <property>
+    <name>fs.s3a.secret.key</name>
+    <value>YOUR_MINIO_SECRET_KEY</value>
+  </property>
+
+  <!-- MinIO uses path-style URLs -->
+  <property>
+    <name>fs.s3a.path.style.access</name>
+    <value>true</value>
+  </property>
+
+  <property>
+    <name>fs.s3a.connection.ssl.enabled</name>
+    <value>false</value>
+  </property>
+
+  <property>
+    <name>fs.s3a.fast.upload</name>
+    <value>true</value>
+  </property>
+
+</configuration>
