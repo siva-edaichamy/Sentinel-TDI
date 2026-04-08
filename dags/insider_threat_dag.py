@@ -3,14 +3,18 @@ insider_threat_dag.py — Insider Threat Detection Pipeline
 Airflow TaskFlow API | Schedule: @daily | Greenplum 7.x + MADlib
 
 Pipeline flow:
-    s1_generate_raw
-        └── s2_transform_silver (8 domains in parallel)
-                └── s3_score_gold
-                        └── s5_validate_pipeline
-                                └── s6_report_analytics
+    s1_generate_raw (Bronze: 12 internal + 5 OSINT streams)
+        └── s2_transform_silver — internal (8 domains in parallel)
+                └── s2_collect_internal (fan-in)
+                        └── s2_transform_silver — OSINT (5 domains in parallel)
+                                └── s3_score_gold (internal MADlib + OSINT Gold stream scoring)
+                                        └── s5_validate_pipeline
+                                                └── s6_report_analytics
 
-Each Silver domain runs as an independent parallel task — identity resolution
-is pure SQL inside Greenplum against ext_* PXF external tables on MinIO.
+Internal Silver domains run first (parallel). OSINT Silver follows — osint_lifestyle
+joins sv_hris so must run after internal Silver completes. Gold runs after all 13 Silver
+domains are populated. OSINT Gold stream scoring (5 weekly risk tables + composite) is
+handled inside s3_score_gold.run().
 """
 
 from __future__ import annotations
@@ -34,9 +38,17 @@ import s6_report_analytics
 ENV       = "prod"
 LOG_LEVEL = "INFO"
 
-SILVER_DOMAINS = [
+# 8 internal Silver domains — run in parallel immediately after Bronze
+INTERNAL_SILVER_DOMAINS = [
     "hris", "pacs", "network", "dlp",
     "comms", "pai", "geo", "adjudication",
+]
+
+# 5 OSINT Silver domains — run in parallel AFTER internal Silver completes
+# (osint_lifestyle JOINs sv_hris; others are independent but batched for clarity)
+OSINT_SILVER_DOMAINS = [
+    "osint_twitter", "osint_instagram", "osint_lifestyle",
+    "osint_financial", "osint_darkweb",
 ]
 
 
@@ -56,7 +68,7 @@ def _check(result: dict, stage: str) -> None:
     schedule="@daily",
     start_date=pendulum.now("UTC").subtract(days=1),
     catchup=False,
-    tags=["insider_threat", "tdi", "medallion"],
+    tags=["insider_threat", "tdi", "medallion", "osint"],
     doc_md=__doc__,
 )
 def insider_threat_pipeline():
@@ -68,7 +80,8 @@ def insider_threat_pipeline():
         return result
 
     @task()
-    def s2_resolve_domain(domain: str, bronze_result: dict) -> dict:
+    def s2_resolve_domain(domain: str, upstream_result: dict) -> dict:
+        """Resolve a single Silver domain. upstream_result is used only as a dependency hook."""
         result = s2_transform_silver.run_domain(
             domain=domain, dry_run=False, env=ENV, log_level=LOG_LEVEL
         )
@@ -76,7 +89,15 @@ def insider_threat_pipeline():
         return result
 
     @task()
-    def s3_score(silver_results: list[dict]) -> dict:
+    def s2_collect_internal(results: list[dict]) -> dict:
+        """Fan-in: collect all internal Silver results into a single dict for downstream dependency."""
+        rows_out = sum(r.get("rows_out", 0) for r in results)
+        domains  = [r.get("domain", "?") for r in results]
+        return {"status": "success", "rows_out": rows_out, "domains": domains}
+
+    @task()
+    def s3_score(osint_silver_results: list[dict]) -> dict:
+        """Run Gold scoring after all Silver (internal + OSINT) domains complete."""
         result = s3_score_gold.run(dry_run=False, env=ENV, log_level=LOG_LEVEL)
         _check(result, "s3_score_gold")
         return result
@@ -93,13 +114,28 @@ def insider_threat_pipeline():
         _check(result, "s6_report_analytics")
         return result
 
+    # --- Execution graph ---
+
+    # Stage 1: Bronze (internal + OSINT)
     bronze = s1_generate()
 
-    silver_results = s2_resolve_domain.expand_kwargs(
-        [{"domain": d, "bronze_result": bronze} for d in SILVER_DOMAINS]
+    # Stage 2a: Internal Silver — 8 domains in parallel
+    internal_silver = s2_resolve_domain.expand_kwargs(
+        [{"domain": d, "upstream_result": bronze} for d in INTERNAL_SILVER_DOMAINS]
     )
 
-    gold       = s3_score(silver_results)
+    # Fan-in: wait for all 8 internal Silver domains before OSINT starts
+    internal_done = s2_collect_internal(internal_silver)
+
+    # Stage 2b: OSINT Silver — 5 domains in parallel, after internal Silver
+    osint_silver = s2_resolve_domain.expand_kwargs(
+        [{"domain": d, "upstream_result": internal_done} for d in OSINT_SILVER_DOMAINS]
+    )
+
+    # Stage 3: Gold scoring (internal MADlib + OSINT Gold stream tables + composite)
+    gold = s3_score(osint_silver)
+
+    # Stage 5 & 6: Validation and reporting
     validation = s5_validate(gold)
     s6_report(validation)
 

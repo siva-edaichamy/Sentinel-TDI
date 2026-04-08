@@ -138,6 +138,8 @@ _OLD_DATASET_NAMES = [
     "employee_risk_features", "pipeline_runs",
     "silver_resolution_summary", "gold_latest_window",
     "bronze_catalog", "silver_catalog", "gold_catalog",
+    # OSINT datasets (if ever created as separate datasets)
+    "osint_bronze_catalog", "osint_silver_catalog", "osint_gold_catalog",
 ]
 
 
@@ -194,18 +196,26 @@ def setup_database(client: SupersetClient) -> int:
 
 def _bronze_sql() -> str:
     rows = [
-        ("ext_hris_events",         f"{BRONZE_SCHEMA}.ext_hris_events",         "HR employee master — org structure, roles, clearance levels, employment dates"),
-        ("ext_pacs_events",         f"{BRONZE_SCHEMA}.ext_pacs_events",         "Physical access — raw badge swipes with door ID, timestamp, direction (IN/OUT)"),
-        ("ext_network_events",      f"{BRONZE_SCHEMA}.ext_network_events",      "Network activity — VPN logins, DNS queries, proxy logs, session duration"),
-        ("ext_dlp_events",          f"{BRONZE_SCHEMA}.ext_dlp_events",          "Data loss prevention — file moves, USB writes, print and cloud upload events"),
-        ("ext_comms_events",        f"{BRONZE_SCHEMA}.ext_comms_events",        "Communications metadata — email/Slack volume, recipient counts, attachment flags"),
-        ("ext_pai_events",          f"{BRONZE_SCHEMA}.ext_pai_events",          "Public/social media — platform sentiment scores and post frequency"),
-        ("ext_geo_events",          f"{BRONZE_SCHEMA}.ext_geo_events",          "Geospatial — building locations, device timestamps, latitude/longitude"),
-        ("ext_adjudication_events", f"{BRONZE_SCHEMA}.ext_adjudication_events", "Security adjudication — clearance status, reinvestigation flags, status changes"),
-        ("ext_badge_registry",      f"{BRONZE_SCHEMA}.ext_badge_registry",      "Mapping table — badge ID → employee ID (used by Silver PACS and Geo resolution)"),
-        ("ext_asset_assignment",    f"{BRONZE_SCHEMA}.ext_asset_assignment",    "Mapping table — machine ID → employee ID with effective start/end dates"),
-        ("ext_directory",           f"{BRONZE_SCHEMA}.ext_directory",           "Mapping table — email address and Slack handle → employee ID"),
-        ("ext_social_handle_map",   f"{BRONZE_SCHEMA}.ext_social_handle_map",   "Mapping table — social media handle → employee ID (~5% intentionally unmapped)"),
+        # Internal enterprise sources
+        ("ext_hris_events",         f"{BRONZE_SCHEMA}.ext_hris_events",         "1. HR records — employee names, job titles, departments, hire/termination dates, and security clearance levels"),
+        ("ext_pacs_events",         f"{BRONZE_SCHEMA}.ext_pacs_events",         "2. Building access — when each employee entered or exited each door, including early morning and late night visits"),
+        ("ext_network_events",      f"{BRONZE_SCHEMA}.ext_network_events",      "3. Computer activity — VPN logins, websites visited, data downloaded, and remote access sessions"),
+        ("ext_dlp_events",          f"{BRONZE_SCHEMA}.ext_dlp_events",          "4. File movement — documents copied to USB drives, uploaded to cloud services, or sent to printers"),
+        ("ext_comms_events",        f"{BRONZE_SCHEMA}.ext_comms_events",        "5. Messaging activity — email and Slack volume, how many outside recipients got messages, and large attachment flags"),
+        ("ext_pai_events",          f"{BRONZE_SCHEMA}.ext_pai_events",          "6. Social media — public post frequency and mood scores from monitored social accounts"),
+        ("ext_geo_events",          f"{BRONZE_SCHEMA}.ext_geo_events",          "7. Location data — employee device positions within buildings and campus with timestamps"),
+        ("ext_adjudication_events", f"{BRONZE_SCHEMA}.ext_adjudication_events", "8. Security clearance — clearance status, periodic review flags, and any reinvestigation activity"),
+        # Identity directories
+        ("ext_badge_registry",      f"{BRONZE_SCHEMA}.ext_badge_registry",      "Badge directory — links each physical access badge to the employee it belongs to"),
+        ("ext_asset_assignment",    f"{BRONZE_SCHEMA}.ext_asset_assignment",    "Computer directory — tracks which employee uses which computer and when assignments changed"),
+        ("ext_directory",           f"{BRONZE_SCHEMA}.ext_directory",           "Contact directory — maps employee email addresses and messaging handles to their HR record"),
+        ("ext_social_handle_map",   f"{BRONZE_SCHEMA}.ext_social_handle_map",   "Social identity — links public social media accounts to employee HR records"),
+        # OSINT external feeds (5 streams)
+        ("ext_raw_tweets",          f"{BRONZE_SCHEMA}.ext_raw_tweets",          "Twitter/X — public posts from monitored social accounts, including text, sentiment, and engagement"),
+        ("ext_raw_instagram_posts", f"{BRONZE_SCHEMA}.ext_raw_instagram_posts", "Instagram — public posts and location check-ins from monitored social accounts"),
+        ("ext_raw_lifestyle_signals",f"{BRONZE_SCHEMA}.ext_raw_lifestyle_signals","Lifestyle signals — public purchases, luxury events, and spending patterns from social and public records"),
+        ("ext_raw_financial_stress", f"{BRONZE_SCHEMA}.ext_raw_financial_stress", "Financial stress — public court filings, liens, and judgments matched to employee records by name"),
+        ("ext_raw_darkweb_signals",  f"{BRONZE_SCHEMA}.ext_raw_darkweb_signals",  "Dark web alerts — employee credentials and personal information detected in breach databases"),
     ]
     unions = "\n    UNION ALL\n    ".join(
         f"SELECT '{name}' AS source_name, '{desc}' AS description, COUNT(*)::INT AS record_count FROM {table}"
@@ -216,15 +226,21 @@ def _bronze_sql() -> str:
 
 def _silver_sql() -> str:
     rows = [
-        ("sv_hris",              f"{SILVER_SCHEMA}.sv_hris",              "HR master — employee identity, org hierarchy, role, clearance level, employment status"),
-        ("sv_pacs",              f"{SILVER_SCHEMA}.sv_pacs",              "Physical access — badge events resolved to employee_id, after-hours and weekend flags"),
-        ("sv_network",           f"{SILVER_SCHEMA}.sv_network",           "Network activity — resolved to employee_id, VPN flag, after-hours flag, bytes transferred"),
-        ("sv_dlp",               f"{SILVER_SCHEMA}.sv_dlp",               "Data loss prevention — resolved to employee_id, USB flag, cloud upload flag, file size"),
-        ("sv_comms",             f"{SILVER_SCHEMA}.sv_comms",             "Communications — resolved to employee_id, external recipient flag, attachment flag"),
-        ("sv_pai",               f"{SILVER_SCHEMA}.sv_pai",               "Social/public data — resolved to employee_id, sentiment score, post and engagement counts"),
-        ("sv_geo",               f"{SILVER_SCHEMA}.sv_geo",               "Geospatial — resolved to employee_id, building code, device type, lat/lon coordinates"),
-        ("sv_adjudication",      f"{SILVER_SCHEMA}.sv_adjudication",      "Adjudication — resolved to employee_id, clearance status, investigation and reinvestigation flags"),
-        ("sv_unresolved_events", f"{SILVER_SCHEMA}.sv_unresolved_events", "Dead letter — records that could not be resolved to an employee_id (lineage audit)"),
+        # Internal Silver domains
+        ("sv_hris",              f"{SILVER_SCHEMA}.sv_hris",              "Employee master — every employee's full HR profile: department, role, clearance, and employment dates"),
+        ("sv_pacs",              f"{SILVER_SCHEMA}.sv_pacs",              "Access events — each badge swipe linked to the employee, with after-hours and weekend flags"),
+        ("sv_network",           f"{SILVER_SCHEMA}.sv_network",           "Network sessions — all computer and VPN activity linked to the employee who used it"),
+        ("sv_dlp",               f"{SILVER_SCHEMA}.sv_dlp",               "File activity — USB copies, cloud uploads, and print events linked to the responsible employee"),
+        ("sv_comms",             f"{SILVER_SCHEMA}.sv_comms",             "Messages — email and Slack events linked to each employee, with external contact and attachment flags"),
+        ("sv_pai",               f"{SILVER_SCHEMA}.sv_pai",               "Social sentiment — daily mood scores and emotional tags from public social accounts, linked to employees"),
+        ("sv_geo",               f"{SILVER_SCHEMA}.sv_geo",               "Location records — device positions on campus linked to each employee by badge"),
+        ("sv_adjudication",      f"{SILVER_SCHEMA}.sv_adjudication",      "Clearance history — security status events and reinvestigation flags linked to each employee"),
+        ("sv_unresolved_events", f"{SILVER_SCHEMA}.sv_unresolved_events", "Unmatched records — events that could not be linked to a known employee (audit trail)"),
+        # OSINT Silver domains
+        ("silver_geo_anomalies",        f"{SILVER_SCHEMA}.silver_geo_anomalies",        "Location anomalies — Instagram check-ins flagged as sensitive sites or unusual travel patterns"),
+        ("silver_lifestyle_incongruity", f"{SILVER_SCHEMA}.silver_lifestyle_incongruity", "Lifestyle flags — purchases or activities inconsistent with the employee's compensation level"),
+        ("silver_financial_stress",      f"{SILVER_SCHEMA}.silver_financial_stress",      "Financial stress records — public court filings, liens, and eviction notices linked to employees"),
+        ("silver_darkweb_signals",       f"{SILVER_SCHEMA}.silver_darkweb_signals",       "Dark web matches — employee email or social credentials detected in breach data sources"),
     ]
     unions = "\n    UNION ALL\n    ".join(
         f"SELECT '{name}' AS table_name, '{desc}' AS description, COUNT(*)::INT AS record_count FROM {table}"
@@ -235,10 +251,18 @@ def _silver_sql() -> str:
 
 def _gold_sql() -> str:
     rows = [
-        ("employee_risk_features", f"{GOLD_SCHEMA}.employee_risk_features", "Final risk scores — 7-day rolling anomaly score, tier (HIGH/MEDIUM/LOW), and all 13 derived behavioral features per employee per window"),
-        ("employee_features",      f"{GOLD_SCHEMA}.employee_features",      "MADlib input — normalized 9-dimension feature vectors per employee per rolling window"),
-        ("gd_kmeans_output",       f"{GOLD_SCHEMA}.gd_kmeans_output",       "MADlib kmeanspp model — k=5 cluster centroids trained on the full feature population"),
-        ("gd_scored",              f"{GOLD_SCHEMA}.gd_scored",              "Cluster assignments — each employee-window assigned to nearest centroid, distance = raw anomaly score"),
+        # Internal behavioral scoring
+        ("employee_risk_features", f"{GOLD_SCHEMA}.employee_risk_features", "Behavioral risk scores — 7-day rolling anomaly score, risk tier (HIGH/MEDIUM/LOW), and 13 derived signals per employee per week"),
+        ("employee_features",      f"{GOLD_SCHEMA}.employee_features",      "ML input — normalized numerical feature vectors used as input to the clustering algorithm"),
+        ("gd_kmeans_output",       f"{GOLD_SCHEMA}.gd_kmeans_output",       "Peer-group model — 5 behavioral peer clusters learned from the full employee population by the ML engine"),
+        ("gd_scored",              f"{GOLD_SCHEMA}.gd_scored",              "Cluster assignments — each employee's distance from their peer group (the raw anomaly signal before scoring)"),
+        # OSINT Gold weekly risk streams
+        ("gold_twitter_risk",          f"{GOLD_SCHEMA}.gold_twitter_risk",          "Twitter risk — weekly sentiment trend and emotional signal risk score per employee"),
+        ("gold_location_risk",         f"{GOLD_SCHEMA}.gold_location_risk",         "Location risk — weekly count of sensitive location visits and travel anomaly score per employee"),
+        ("gold_lifestyle_risk",        f"{GOLD_SCHEMA}.gold_lifestyle_risk",         "Lifestyle risk — weekly unexplained spending and luxury activity risk score per employee"),
+        ("gold_financial_stress_risk", f"{GOLD_SCHEMA}.gold_financial_stress_risk", "Financial stress risk — weekly public filing count and cumulative financial pressure score per employee"),
+        ("gold_darkweb_risk",          f"{GOLD_SCHEMA}.gold_darkweb_risk",          "Dark web risk — weekly breach detection count and severity-weighted risk score per employee"),
+        ("gold_composite_risk",        f"{GOLD_SCHEMA}.gold_composite_risk",         "Composite risk — final fused score across all 6 behavioral streams with risk tier (LOW/MEDIUM/HIGH/CRITICAL) and recommended action"),
     ]
     unions = "\n    UNION ALL\n    ".join(
         f"SELECT '{name}' AS table_name, '{desc}' AS description, COUNT(*)::INT AS record_count FROM {table}"

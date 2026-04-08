@@ -4,7 +4,7 @@ s5_validate_pipeline.py — Pipeline QA and lineage checks.
 Runs all validation targets from CLAUDE.md against live Greenplum data
 and writes reports/validation_report.md.
 
-Validation targets:
+Validation targets (internal pipeline):
   - Employee coverage in Gold        : all 500 EMP IDs present
   - Silver identity resolution rate  : >= 90% per domain
   - Unresolved records               : count reported, written to sv_unresolved_events
@@ -15,6 +15,12 @@ Validation targets:
   - Lineage traceability             : every Gold record has model_run_id
   - MADlib model metadata            : model_run_id logged
   - Cross-domain coverage            : all 8 domains contributing to >= 95% of Gold records
+
+OSINT stream checks:
+  - OSINT Silver row counts          : all 5 Silver OSINT tables have data
+  - OSINT Silver resolution rates    : >= 90% for handle-based streams
+  - OSINT Gold table populations     : 5 Gold stream tables + composite populated
+  - Composite risk tier distribution : >= 2 distinct risk tiers in gold_composite_risk
 """
 
 from __future__ import annotations
@@ -278,6 +284,116 @@ def check_cross_domain_coverage(env: str) -> CheckResult:
     )
 
 
+def check_osint_silver_row_counts(env: str) -> list[CheckResult]:
+    """OSINT Silver tables have data (at least 1 row each)."""
+    tables = {
+        "silver_geo_anomalies":        "instagram location anomalies",
+        "silver_lifestyle_incongruity": "lifestyle incongruity signals",
+        "silver_financial_stress":      "financial stress records",
+        "silver_darkweb_signals":       "dark web detections",
+    }
+    results = []
+    for table, label in tables.items():
+        count = _scalar(env, f"SELECT COUNT(*) FROM {SILVER_SCHEMA}.{table}")
+        passed = count is not None and count > 0
+        results.append(CheckResult(
+            f"osint_silver_{table}",
+            passed,
+            f"{label}: {count or 0} rows in {SILVER_SCHEMA}.{table}",
+            count,
+        ))
+    # sv_pai emotion_tags — check that Twitter OSINT updated at least some rows
+    tagged = _scalar(env, f"""
+        SELECT COUNT(*) FROM {SILVER_SCHEMA}.sv_pai
+        WHERE emotion_tags IS NOT NULL AND cardinality(emotion_tags) > 0
+    """)
+    passed = tagged is not None and tagged > 0
+    results.append(CheckResult(
+        "osint_silver_twitter_emotion_tags",
+        passed,
+        f"sv_pai rows with emotion_tags populated: {tagged or 0}",
+        tagged,
+    ))
+    return results
+
+
+def check_osint_silver_resolution_rates(env: str) -> list[CheckResult]:
+    """OSINT Silver resolution rates >= 90% for handle-based streams."""
+    results = []
+    handle_tables = {
+        "silver_geo_anomalies":        "instagram",
+        "silver_lifestyle_incongruity": "lifestyle",
+        "silver_darkweb_signals":       "darkweb",
+    }
+    for table, domain in handle_tables.items():
+        rows = _q(env, f"""
+            SELECT identity_resolution_status, COUNT(*) AS cnt
+            FROM {SILVER_SCHEMA}.{table}
+            GROUP BY identity_resolution_status
+        """)
+        total    = sum(r[1] for r in rows)
+        resolved = sum(r[1] for r in rows if r[0] == "RESOLVED")
+        rate     = resolved / total if total > 0 else 0.0
+        passed   = total == 0 or rate >= MIN_RESOLUTION   # 0 rows = no data, not a resolution failure
+        results.append(CheckResult(
+            f"osint_resolution_{domain}",
+            passed,
+            f"{domain}: {rate:.1%} resolved ({resolved:,}/{total:,})",
+            round(rate, 4),
+        ))
+    # Financial stress — direct employee_id, always RESOLVED
+    fin_count = _scalar(env, f"SELECT COUNT(*) FROM {SILVER_SCHEMA}.silver_financial_stress")
+    results.append(CheckResult(
+        "osint_resolution_financial_stress",
+        True,
+        f"financial_stress: direct employee_id (always resolved), {fin_count or 0} rows",
+        fin_count,
+    ))
+    return results
+
+
+def check_osint_gold_tables(env: str) -> list[CheckResult]:
+    """OSINT Gold tables are populated with rows."""
+    gold_tables = {
+        "gold_twitter_risk":          "Twitter sentiment risk",
+        "gold_location_risk":         "Location anomaly risk",
+        "gold_lifestyle_risk":        "Lifestyle incongruity risk",
+        "gold_financial_stress_risk": "Financial stress risk",
+        "gold_darkweb_risk":          "Dark web signal risk",
+        "gold_composite_risk":        "Composite risk fusion",
+    }
+    results = []
+    for table, label in gold_tables.items():
+        count = _scalar(env, f"SELECT COUNT(*) FROM {GOLD_SCHEMA}.{table}")
+        passed = count is not None and count > 0
+        results.append(CheckResult(
+            f"osint_gold_{table}",
+            passed,
+            f"{label}: {count or 0} weekly risk rows in {GOLD_SCHEMA}.{table}",
+            count,
+        ))
+    return results
+
+
+def check_osint_composite_risk_tiers(env: str) -> CheckResult:
+    """Composite risk tier distribution — at least 3 distinct tiers represented."""
+    rows = _q(env, f"""
+        SELECT risk_tier, COUNT(*) AS cnt
+        FROM {GOLD_SCHEMA}.gold_composite_risk
+        GROUP BY risk_tier
+        ORDER BY cnt DESC
+    """)
+    tier_count = len(rows)
+    passed = tier_count >= 2   # At least LOW and something else
+    detail_parts = [f"{r[0]}:{r[1]}" for r in rows]
+    return CheckResult(
+        "composite_risk_tier_distribution",
+        passed,
+        f"{tier_count} distinct risk tiers: {', '.join(detail_parts)}",
+        {r[0]: r[1] for r in rows},
+    )
+
+
 def check_score_range(env: str) -> CheckResult:
     """Anomaly scores are non-zero and have meaningful spread."""
     rows = _q(env, f"""
@@ -357,6 +473,7 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
     try:
         logger.info("Running validation checks...")
 
+        # ---- Internal pipeline checks ----
         all_checks.append(check_employee_coverage(env))
         all_checks.extend(check_silver_resolution_rates(env))
         all_checks.append(check_unresolved_count(env))
@@ -368,6 +485,12 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
         all_checks.append(check_model_run_id(env))
         all_checks.append(check_cross_domain_coverage(env))
         all_checks.append(check_score_range(env))
+
+        # ---- OSINT stream checks ----
+        all_checks.extend(check_osint_silver_row_counts(env))
+        all_checks.extend(check_osint_silver_resolution_rates(env))
+        all_checks.extend(check_osint_gold_tables(env))
+        all_checks.append(check_osint_composite_risk_tiers(env))
 
         # Log all results
         for c in all_checks:

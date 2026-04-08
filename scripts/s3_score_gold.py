@@ -631,6 +631,343 @@ def _load_gold(df: pd.DataFrame, env: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# OSINT Gold stream scoring — 5 weekly risk tables + composite fusion
+# ---------------------------------------------------------------------------
+
+def _score_osint_streams(env: str, dry_run: bool, model_run_id: str) -> list[str]:
+    """
+    Score all 5 OSINT streams into Gold weekly risk tables and compute the
+    composite risk fusion (gold_composite_risk).
+
+    Weights (per CLAUDE.md):
+      internal_behavioral=0.25, financial=0.18, twitter=0.15,
+      lifestyle=0.15, darkweb=0.15, location=0.12
+
+    Returns list of Gold table names populated.
+    """
+    if dry_run:
+        logger.info("[DRY-RUN] Skipping OSINT Gold stream scoring")
+        return []
+
+    G = GOLD_SCHEMA
+    S = SILVER_SCHEMA
+
+    # ---- 1. gold_twitter_risk (from sv_pai) ----
+    twitter_sql = f"""
+        TRUNCATE {G}.gold_twitter_risk;
+
+        INSERT INTO {G}.gold_twitter_risk (
+            week_start_date, employee_id,
+            sentiment_trend, sentiment_risk_score,
+            primary_emotion, risk_narrative, scored_at
+        )
+        WITH weekly_sentiment AS (
+            SELECT
+                DATE_TRUNC('week', event_date)::DATE        AS week_start_date,
+                employee_id,
+                AVG(sentiment_score)                        AS week_avg,
+                COUNT(*)                                    AS post_count
+            FROM {S}.sv_pai
+            GROUP BY DATE_TRUNC('week', event_date)::DATE, employee_id
+        ),
+        rolling_base AS (
+            SELECT
+                week_start_date, employee_id, week_avg, post_count,
+                AVG(week_avg) OVER (
+                    PARTITION BY employee_id
+                    ORDER BY week_start_date
+                    ROWS BETWEEN 4 PRECEDING AND CURRENT ROW
+                ) AS rolling_30d_avg
+            FROM weekly_sentiment
+        ),
+        emotion_weekly AS (
+            SELECT
+                DATE_TRUNC('week', event_date)::DATE        AS week_start_date,
+                employee_id,
+                unnest(emotion_tags)                        AS emotion
+            FROM {S}.sv_pai
+            WHERE emotion_tags IS NOT NULL
+        ),
+        top_emotion AS (
+            SELECT week_start_date, employee_id, emotion,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY week_start_date, employee_id
+                       ORDER BY COUNT(*) DESC
+                   ) AS rn
+            FROM emotion_weekly
+            GROUP BY week_start_date, employee_id, emotion
+        )
+        SELECT
+            rb.week_start_date,
+            rb.employee_id,
+            CASE
+                WHEN rb.week_avg < rb.rolling_30d_avg - 0.25 THEN 'declining_sharply'
+                WHEN rb.week_avg < rb.rolling_30d_avg - 0.08 THEN 'declining'
+                WHEN rb.week_avg > rb.rolling_30d_avg + 0.08 THEN 'improving'
+                ELSE                                               'stable'
+            END                                                 AS sentiment_trend,
+            GREATEST(0.0, LEAST(1.0,
+                (rb.rolling_30d_avg - rb.week_avg + 1.0) / 2.0
+            ))                                                  AS sentiment_risk_score,
+            te.emotion                                          AS primary_emotion,
+            'Weekly sentiment avg=' || ROUND(rb.week_avg::NUMERIC,3)
+                || ' vs 30d baseline=' || ROUND(rb.rolling_30d_avg::NUMERIC,3) AS risk_narrative,
+            NOW()                                               AS scored_at
+        FROM rolling_base rb
+        LEFT JOIN top_emotion te
+            ON rb.week_start_date = te.week_start_date
+           AND rb.employee_id    = te.employee_id
+           AND te.rn = 1
+    """
+
+    # ---- 2. gold_location_risk (from silver_geo_anomalies) ----
+    location_sql = f"""
+        TRUNCATE {G}.gold_location_risk;
+
+        INSERT INTO {G}.gold_location_risk (
+            week_start_date, employee_id,
+            sensitive_location_count, work_hours_absence_count,
+            location_risk_score, risk_narrative, scored_at
+        )
+        SELECT
+            DATE_TRUNC('week', event_date)::DATE                AS week_start_date,
+            employee_id,
+            SUM(CASE WHEN anomaly_flag      THEN 1 ELSE 0 END)  AS sensitive_location_count,
+            SUM(CASE WHEN work_hours_flag   THEN 1 ELSE 0 END)  AS work_hours_absence_count,
+            LEAST(1.0,
+                (SUM(CASE WHEN anomaly_flag THEN 1 ELSE 0 END) * 0.15)
+                + (SUM(CASE WHEN incongruity_flag THEN 1 ELSE 0 END) * 0.10)
+            )                                                   AS location_risk_score,
+            'Anomaly locations=' || SUM(CASE WHEN anomaly_flag THEN 1 ELSE 0 END)
+                || ' incongruent=' || SUM(CASE WHEN incongruity_flag THEN 1 ELSE 0 END) AS risk_narrative,
+            NOW()                                               AS scored_at
+        FROM {S}.silver_geo_anomalies
+        GROUP BY DATE_TRUNC('week', event_date)::DATE, employee_id
+    """
+
+    # ---- 3. gold_lifestyle_risk (from silver_lifestyle_incongruity) ----
+    lifestyle_sql = f"""
+        TRUNCATE {G}.gold_lifestyle_risk;
+
+        INSERT INTO {G}.gold_lifestyle_risk (
+            week_start_date, employee_id,
+            incongruity_event_count, cumulative_30day_spend,
+            max_incongruity_score, lifestyle_risk_score,
+            risk_narrative, scored_at
+        )
+        SELECT
+            DATE_TRUNC('week', event_date)::DATE                AS week_start_date,
+            employee_id,
+            COUNT(*)                                            AS incongruity_event_count,
+            MAX(cumulative_30day_spend)                         AS cumulative_30day_spend,
+            MAX(incongruity_score)                              AS max_incongruity_score,
+            LEAST(1.0,
+                (COUNT(*) * 0.05) + (MAX(incongruity_score) * 0.30)
+            )                                                   AS lifestyle_risk_score,
+            'Events=' || COUNT(*) || ' max_incongruity=' || ROUND(MAX(incongruity_score)::NUMERIC,3)
+                || ' 30d_spend=$' || MAX(cumulative_30day_spend) AS risk_narrative,
+            NOW()                                               AS scored_at
+        FROM {S}.silver_lifestyle_incongruity
+        GROUP BY DATE_TRUNC('week', event_date)::DATE, employee_id
+    """
+
+    # ---- 4. gold_financial_stress_risk (from silver_financial_stress) ----
+    financial_sql = f"""
+        TRUNCATE {G}.gold_financial_stress_risk;
+
+        INSERT INTO {G}.gold_financial_stress_risk (
+            week_start_date, employee_id,
+            active_record_count, cumulative_stress_score,
+            financial_risk_score, risk_narrative, scored_at
+        )
+        SELECT
+            DATE_TRUNC('week', event_date)::DATE                AS week_start_date,
+            employee_id,
+            COUNT(*)                                            AS active_record_count,
+            MAX(cumulative_stress_score)                        AS cumulative_stress_score,
+            LEAST(1.0,
+                (COUNT(*) * 0.10) + (MAX(cumulative_stress_score) * 0.15)
+            )                                                   AS financial_risk_score,
+            'Public records=' || COUNT(*) || ' cumulative_stress='
+                || ROUND(MAX(cumulative_stress_score)::NUMERIC,3)  AS risk_narrative,
+            NOW()                                               AS scored_at
+        FROM {S}.silver_financial_stress
+        GROUP BY DATE_TRUNC('week', event_date)::DATE, employee_id
+    """
+
+    # ---- 5. gold_darkweb_risk (from silver_darkweb_signals) ----
+    darkweb_sql = f"""
+        TRUNCATE {G}.gold_darkweb_risk;
+
+        INSERT INTO {G}.gold_darkweb_risk (
+            week_start_date, employee_id,
+            detection_count, max_severity,
+            darkweb_risk_score, risk_narrative, scored_at
+        )
+        SELECT
+            DATE_TRUNC('week', event_date)::DATE                AS week_start_date,
+            employee_id,
+            COUNT(*)                                            AS detection_count,
+            MAX(CASE severity
+                WHEN 'high'   THEN 1.0
+                WHEN 'medium' THEN 0.5
+                ELSE               0.2
+            END)                                                AS max_severity,
+            LEAST(1.0,
+                (COUNT(*) * 0.15) + MAX(CASE severity
+                    WHEN 'high'   THEN 0.60
+                    WHEN 'medium' THEN 0.30
+                    ELSE               0.10
+                END)
+            )                                                   AS darkweb_risk_score,
+            'Detections=' || COUNT(*) || ' max_severity=' || MAX(severity) AS risk_narrative,
+            NOW()                                               AS scored_at
+        FROM {S}.silver_darkweb_signals
+        GROUP BY DATE_TRUNC('week', event_date)::DATE, employee_id
+    """
+
+    # ---- 6. gold_composite_risk — fusion of all 6 streams ----
+    # internal_behavioral_risk_score sourced from employee_risk_features (anomaly_percentile/100)
+    composite_sql = f"""
+        TRUNCATE {G}.gold_composite_risk;
+
+        INSERT INTO {G}.gold_composite_risk (
+            week_start_date, employee_id,
+            twitter_risk_score, location_risk_score, lifestyle_risk_score,
+            financial_risk_score, darkweb_risk_score,
+            internal_behavioral_risk_score, composite_risk_score,
+            risk_tier, tier_change_flag, primary_signal_driver,
+            recommended_action, composite_narrative, scored_at
+        )
+        WITH internal_scores AS (
+            SELECT
+                (window_end_date - INTERVAL '6 days')::DATE     AS week_start_date,
+                employee_id,
+                AVG(anomaly_percentile / 100.0)                 AS internal_behavioral_risk_score
+            FROM {G}.employee_risk_features
+            GROUP BY (window_end_date - INTERVAL '6 days')::DATE, employee_id
+        ),
+        all_scores AS (
+            SELECT
+                COALESCE(
+                    i.week_start_date, tw.week_start_date, lo.week_start_date,
+                    ls.week_start_date, fi.week_start_date, dw.week_start_date
+                )                                               AS week_start_date,
+                COALESCE(
+                    i.employee_id, tw.employee_id, lo.employee_id,
+                    ls.employee_id, fi.employee_id, dw.employee_id
+                )                                               AS employee_id,
+                COALESCE(tw.sentiment_risk_score,    0.0)       AS twitter_risk_score,
+                COALESCE(lo.location_risk_score,     0.0)       AS location_risk_score,
+                COALESCE(ls.lifestyle_risk_score,    0.0)       AS lifestyle_risk_score,
+                COALESCE(fi.financial_risk_score,    0.0)       AS financial_risk_score,
+                COALESCE(dw.darkweb_risk_score,      0.0)       AS darkweb_risk_score,
+                COALESCE(i.internal_behavioral_risk_score, 0.0) AS internal_behavioral_risk_score
+            FROM internal_scores i
+            FULL OUTER JOIN {G}.gold_twitter_risk   tw USING (week_start_date, employee_id)
+            FULL OUTER JOIN {G}.gold_location_risk  lo USING (week_start_date, employee_id)
+            FULL OUTER JOIN {G}.gold_lifestyle_risk ls USING (week_start_date, employee_id)
+            FULL OUTER JOIN {G}.gold_financial_stress_risk fi USING (week_start_date, employee_id)
+            FULL OUTER JOIN {G}.gold_darkweb_risk   dw USING (week_start_date, employee_id)
+        ),
+        scored AS (
+            SELECT *,
+                ROUND(CAST(
+                    (internal_behavioral_risk_score * 0.25)
+                  + (financial_risk_score           * 0.18)
+                  + (twitter_risk_score             * 0.15)
+                  + (lifestyle_risk_score           * 0.15)
+                  + (darkweb_risk_score             * 0.15)
+                  + (location_risk_score            * 0.12)
+                AS NUMERIC), 4)                                 AS composite_risk_score,
+                GREATEST(
+                    internal_behavioral_risk_score,
+                    financial_risk_score,
+                    twitter_risk_score,
+                    lifestyle_risk_score,
+                    darkweb_risk_score,
+                    location_risk_score
+                )                                               AS max_stream_score,
+                CASE
+                    WHEN internal_behavioral_risk_score = GREATEST(
+                        internal_behavioral_risk_score, financial_risk_score, twitter_risk_score,
+                        lifestyle_risk_score, darkweb_risk_score, location_risk_score)
+                        THEN 'internal_behavioral'
+                    WHEN financial_risk_score = GREATEST(
+                        internal_behavioral_risk_score, financial_risk_score, twitter_risk_score,
+                        lifestyle_risk_score, darkweb_risk_score, location_risk_score)
+                        THEN 'financial_stress'
+                    WHEN darkweb_risk_score = GREATEST(
+                        internal_behavioral_risk_score, financial_risk_score, twitter_risk_score,
+                        lifestyle_risk_score, darkweb_risk_score, location_risk_score)
+                        THEN 'dark_web'
+                    WHEN lifestyle_risk_score = GREATEST(
+                        internal_behavioral_risk_score, financial_risk_score, twitter_risk_score,
+                        lifestyle_risk_score, darkweb_risk_score, location_risk_score)
+                        THEN 'lifestyle'
+                    WHEN twitter_risk_score = GREATEST(
+                        internal_behavioral_risk_score, financial_risk_score, twitter_risk_score,
+                        lifestyle_risk_score, darkweb_risk_score, location_risk_score)
+                        THEN 'twitter_sentiment'
+                    ELSE 'location'
+                END                                             AS primary_signal_driver
+            FROM all_scores
+            WHERE week_start_date IS NOT NULL AND employee_id IS NOT NULL
+        )
+        SELECT
+            s.week_start_date,
+            s.employee_id,
+            s.twitter_risk_score,
+            s.location_risk_score,
+            s.lifestyle_risk_score,
+            s.financial_risk_score,
+            s.darkweb_risk_score,
+            s.internal_behavioral_risk_score,
+            s.composite_risk_score,
+            CASE
+                WHEN s.composite_risk_score >= 0.75 THEN 'CRITICAL'
+                WHEN s.composite_risk_score >= 0.50 THEN 'HIGH'
+                WHEN s.composite_risk_score >= 0.25 THEN 'MEDIUM'
+                ELSE                                     'LOW'
+            END                                                 AS risk_tier,
+            FALSE                                               AS tier_change_flag,
+            s.primary_signal_driver,
+            CASE
+                WHEN s.composite_risk_score >= 0.75 THEN 'ESCALATE'
+                WHEN s.composite_risk_score >= 0.50 THEN 'INVESTIGATE'
+                WHEN s.composite_risk_score >= 0.25 THEN 'MONITOR'
+                ELSE                                     'ROUTINE'
+            END                                                 AS recommended_action,
+            'Composite=' || s.composite_risk_score
+                || ' driver=' || s.primary_signal_driver        AS composite_narrative,
+            NOW()                                               AS scored_at
+        FROM scored s
+    """
+
+    populated = []
+    tables_sql = [
+        ("gold_twitter_risk",         twitter_sql),
+        ("gold_location_risk",        location_sql),
+        ("gold_lifestyle_risk",       lifestyle_sql),
+        ("gold_financial_stress_risk", financial_sql),
+        ("gold_darkweb_risk",         darkweb_sql),
+        ("gold_composite_risk",       composite_sql),
+    ]
+
+    with get_connection(env) as conn:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            for table_name, sql_block in tables_sql:
+                logger.info("Scoring OSINT Gold: %s", table_name)
+                for stmt in _split_sql(sql_block):
+                    cur.execute(stmt)
+                populated.append(f"{G}.{table_name}")
+                logger.info("  %s loaded (rowcount=%s)", table_name, cur.rowcount)
+
+    return populated
+
+
+# ---------------------------------------------------------------------------
 # run()
 # ---------------------------------------------------------------------------
 
@@ -795,6 +1132,12 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
             artifacts.append("[DRY-RUN] data/gold/employee_risk_features.parquet")
 
         _write_feature_dict(dry_run)
+
+        # ---- OSINT Gold stream scoring ----
+        logger.info("Scoring OSINT Gold streams...")
+        osint_gold_tables = _score_osint_streams(env, dry_run, model_run_id)
+        artifacts.extend(osint_gold_tables)
+        logger.info("OSINT Gold streams populated: %s", osint_gold_tables)
 
         duration = time.perf_counter() - t0
         logger.info("s3_score_gold DONE | rows_out=%d duration=%.2fs", rows_out, duration)

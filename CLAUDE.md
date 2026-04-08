@@ -524,6 +524,95 @@ GP_PASSWORD    = os.getenv("GP_PASSWORD", "")
 
 ---
 
+## OSINT Augmentation — 5 External Behavioral Streams
+
+These 5 OSINT streams augment the 12 internal enterprise tables, adding external
+behavioral signal to the composite risk score. Each stream follows the same
+Bronze → Silver → Gold medallion pattern.
+
+### DDL
+
+`ddl/ddl_osint.sql` — run after `ddl.sql`. Adds:
+- 5 Bronze regular tables + 5 ext_* PXF external tables (path: `bronze/osint/`)
+- ALTER TABLE sv_pai: adds `emotion_tags TEXT[]` and `keyword_flags TEXT[]`
+- 4 new Silver tables + 5 Gold stream tables + `gold_composite_risk`
+
+### Bronze OSINT Streams
+
+| File | MinIO Path | Native ID | Description |
+|---|---|---|---|
+| `raw_tweets.csv` | `bronze/osint/raw_tweets.csv` | `handle` (social_handle) | Tweet text, retweet flag, like count |
+| `raw_instagram_posts.csv` | `bronze/osint/raw_instagram_posts.csv` | `handle` (social_handle) | Post caption, location lat/lon, post type |
+| `raw_lifestyle_signals.csv` | `bronze/osint/raw_lifestyle_signals.csv` | `handle` (social_handle) | Signal source, estimated_value_usd |
+| `raw_financial_stress.csv` | `bronze/osint/raw_financial_stress.csv` | `employee_id` (direct) | Source, raw public record text |
+| `raw_darkweb_signals.csv` | `bronze/osint/raw_darkweb_signals.csv` | `handle` (email OR social) | Signal source, matched_on (email\|social_handle) |
+
+### Silver OSINT Tables
+
+| Table | Resolution Path | Key Columns |
+|---|---|---|
+| sv_pai (augmented) | social_handle → employee_id via social_handle_map | + emotion_tags TEXT[], keyword_flags TEXT[] |
+| silver_geo_anomalies | social_handle → employee_id via social_handle_map | classified_location_type, anomaly_flag, work_hours_flag, incongruity_flag |
+| silver_lifestyle_incongruity | social_handle → employee_id via social_handle_map | signal_type, estimated_value_usd, salary_band, incongruity_score, cumulative_30day_spend |
+| silver_financial_stress | direct (employee_id native) | record_type, amount_usd, stress_score, cumulative_stress_score |
+| silver_darkweb_signals | email → directory OR social_handle → social_handle_map | signal_type, severity, confidence_score, matched_on |
+
+### Gold OSINT Stream Tables
+
+| Table | Grain | Key Score |
+|---|---|---|
+| gold_twitter_risk | employee + week_start_date | sentiment_risk_score (0-1) |
+| gold_location_risk | employee + week_start_date | location_risk_score (0-1) |
+| gold_lifestyle_risk | employee + week_start_date | lifestyle_risk_score (0-1) |
+| gold_financial_stress_risk | employee + week_start_date | financial_risk_score (0-1) |
+| gold_darkweb_risk | employee + week_start_date | darkweb_risk_score (0-1) |
+| gold_composite_risk | employee + week_start_date | composite_risk_score (0-1), risk_tier, recommended_action |
+
+### Composite Risk Weights
+
+```
+internal_behavioral = 0.25
+financial_stress    = 0.18
+twitter_sentiment   = 0.15
+lifestyle           = 0.15
+dark_web            = 0.15
+location            = 0.12
+```
+
+### Behavioral Realism — Lead/Lag Timeline (90-day window)
+
+Threat actor cohort: 25 employees (deterministic — same `np.random.default_rng(42).choice(500, size=25)`)
+
+| Days | Signal Active |
+|---|---|
+| 1–20 | Lifestyle incongruity (spending up, luxury purchases) |
+| 15–35 | Financial stress public records emerge |
+| 25–50 | Twitter sentiment begins declining |
+| 40–60 | Instagram sensitive location visits |
+| 55–75 | Dark web signals correlate |
+| 60–90 | Internal behavioral signals spike |
+| 75–90 | Composite risk crosses CRITICAL threshold |
+
+### OSINT Generator
+
+`scripts/generate_osint_streams.py` — standalone, callable from s1 or CLI.
+Called automatically from `s1_generate_raw.run()` at end of Bronze generation.
+Outputs to `data/bronze/osint/` and uploads to MinIO `bronze/osint/` prefix.
+
+### Airflow DAG Flow (with OSINT)
+
+```
+s1_generate (Bronze: 12 internal + 5 OSINT streams)
+  └── s2_resolve_domain × 8 (internal Silver, parallel)
+        └── s2_collect_internal (fan-in)
+              └── s2_resolve_domain × 5 (OSINT Silver, parallel)
+                    └── s3_score (internal MADlib + 5 OSINT Gold tables + composite)
+                          └── s5_validate
+                                └── s6_report
+```
+
+---
+
 ## Out of Scope (This Phase)
 
 - Generative AI / RAG explanation layer (future Sovereign AI phase)

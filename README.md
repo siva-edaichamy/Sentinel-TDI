@@ -166,12 +166,28 @@ python s0_orchestrate.py
 
 | Script | Layer | What it does |
 |---|---|---|
-| `s1_generate_raw.py` | Bronze | Generates synthetic events for 8 domains (500 employees, 90-day timeline), uploads to MinIO |
-| `s2_transform_silver.py` | Silver | Resolves source identifiers to `employee_id`, loads 8 Silver tables in Greenplum |
-| `s3_score_gold.py` | Gold | Joins Silver domains, derives behavioral features, runs MADlib kmeanspp, scores anomalies |
-| `s5_validate_pipeline.py` | QA | Checks coverage, identity resolution rates, null rates, cluster distribution |
+| `s1_generate_raw.py` | Bronze | Generates synthetic events for 8 internal domains + 5 OSINT streams (500 employees, 90-day timeline), uploads to MinIO |
+| `generate_osint_streams.py` | Bronze | OSINT sub-generator called by s1 — Twitter, Instagram, Lifestyle, Financial Stress, Dark Web |
+| `s2_transform_silver.py` | Silver | Resolves source identifiers to `employee_id`, loads 8 internal + 4 OSINT Silver tables in Greenplum |
+| `s3_score_gold.py` | Gold | Joins Silver domains, derives behavioral features, runs MADlib kmeanspp; also scores 5 OSINT Gold stream tables + composite |
+| `s5_validate_pipeline.py` | QA | Checks coverage, identity resolution rates, null rates, cluster distribution, and OSINT stream table populations |
 | `s6_report_analytics.py` | Report | Writes executive analytics and validation reports to `reports/` |
 | `s4_build_platform.py` | Platform | Regenerates DDL, DAG, and MADlib SQL from templates (dev use) |
+
+### OSINT Augmentation (5 external behavioral streams)
+
+The pipeline includes 5 OSINT streams that add external behavioral context to the composite risk score. Each follows the same Bronze → Silver → Gold pattern as the internal enterprise data.
+
+| Stream | Bronze Source | Silver Table | Gold Table | Weight |
+|---|---|---|---|---|
+| Twitter/X sentiment | `raw_tweets.csv` | `sv_pai` (emotion_tags added) | `gold_twitter_risk` | 15% |
+| Instagram location | `raw_instagram_posts.csv` | `silver_geo_anomalies` | `gold_location_risk` | 12% |
+| Lifestyle signals | `raw_lifestyle_signals.csv` | `silver_lifestyle_incongruity` | `gold_lifestyle_risk` | 15% |
+| Financial stress | `raw_financial_stress.csv` | `silver_financial_stress` | `gold_financial_stress_risk` | 18% |
+| Dark web signals | `raw_darkweb_signals.csv` | `silver_darkweb_signals` | `gold_darkweb_risk` | 15% |
+| Internal behavioral | (8 enterprise domains) | `sv_*` tables | `employee_risk_features` | 25% |
+
+The **composite risk score** (`gold_composite_risk`) fuses all 6 streams into a single weekly score per employee with a risk tier (LOW / MEDIUM / HIGH / CRITICAL) and a recommended action.
 
 ---
 
@@ -188,14 +204,17 @@ Gold-layer scoring runs inside Greenplum — no external model server required.
 ## Directory structure
 
 ```
-scripts/         Pipeline scripts (s0–s6)
+scripts/         Pipeline scripts (s0–s6) + generate_osint_streams.py
 config/          PXF server config templates
 dags/            Airflow TaskFlow DAG
 data/
   bronze/        Generated CSV/JSON files (gitignored, created at runtime)
+    osint/       OSINT Bronze stream files (5 streams)
   silver/        Parquet outputs per domain (gitignored)
   gold/          Parquet risk feature table (gitignored)
-ddl/             Greenplum DDL — all three schemas
+ddl/
+  ddl.sql        Greenplum DDL — Bronze, Silver, Gold (internal)
+  ddl_osint.sql  Greenplum DDL — Bronze, Silver, Gold (OSINT augmentation)
 reports/         Generated validation and analytics reports (gitignored)
 scdf/            SCDF stream definitions (reference/narrative only)
 sql/             MADlib training and scoring SQL

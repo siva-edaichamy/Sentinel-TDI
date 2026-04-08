@@ -496,6 +496,344 @@ def _sql_adjudication(ingested_at: str) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# OSINT Silver SQL — 5 new streams
+# ---------------------------------------------------------------------------
+
+def _sql_osint_twitter(ingested_at: str) -> tuple[str, str]:
+    """
+    Twitter — UPDATE sv_pai to populate emotion_tags and keyword_flags.
+    Identity: tweet handle → employee_id via ext_social_handle_map.
+    No TRUNCATE — sv_pai already populated by the 'pai' internal domain.
+    """
+    update = f"""
+        WITH tweet_daily AS (
+            SELECT
+                sm.employee_id,
+                tw.scraped_datetime::DATE                        AS event_date,
+                string_agg(tw.tweet_text, ' ')                   AS combined_text
+            FROM {BRONZE_SCHEMA}.ext_raw_tweets tw
+            JOIN {BRONZE_SCHEMA}.ext_social_handle_map sm
+                ON tw.handle = sm.social_handle
+                AND sm.employee_id IS NOT NULL
+            GROUP BY sm.employee_id, tw.scraped_datetime::DATE
+        )
+        UPDATE {SILVER_SCHEMA}.sv_pai sp
+        SET
+            emotion_tags = ARRAY_REMOVE(ARRAY[
+                CASE WHEN td.combined_text ILIKE '%frustr%'   OR td.combined_text ILIKE '%angry%'
+                          OR td.combined_text ILIKE '%rage%'                     THEN 'frustration'   END,
+                CASE WHEN td.combined_text ILIKE '%unfair%'   OR td.combined_text ILIKE '%betray%'
+                          OR td.combined_text ILIKE '%resentment%'               THEN 'grievance'     END,
+                CASE WHEN td.combined_text ILIKE '%quit%'     OR td.combined_text ILIKE '%leaving%'
+                          OR td.combined_text ILIKE '%resign%'                   THEN 'disengagement' END,
+                CASE WHEN td.combined_text ILIKE '%depress%'  OR td.combined_text ILIKE '%hopeless%'
+                          OR td.combined_text ILIKE '%stress%'                   THEN 'distress'      END,
+                CASE WHEN td.combined_text ILIKE '%steal%'    OR td.combined_text ILIKE '%revenge%'
+                          OR td.combined_text ILIKE '%payback%'                  THEN 'hostility'     END
+            ], NULL),
+            keyword_flags = ARRAY_REMOVE(ARRAY[
+                CASE WHEN td.combined_text ILIKE '%secret%'        OR td.combined_text ILIKE '%confidential%'
+                                                                                   THEN 'sensitive_terms'    END,
+                CASE WHEN td.combined_text ILIKE '%money%'         OR td.combined_text ILIKE '%debt%'
+                          OR td.combined_text ILIKE '%bankrupt%'                   THEN 'financial_stress'   END,
+                CASE WHEN td.combined_text ILIKE '%fired%'         OR td.combined_text ILIKE '%unemployed%'
+                          OR td.combined_text ILIKE '%looking for work%'           THEN 'employment_concern' END,
+                CASE WHEN td.combined_text ILIKE '%recruiter%'     OR td.combined_text ILIKE '%new opportunity%'
+                                                                                   THEN 'job_seeking'        END
+            ], NULL)
+        FROM tweet_daily td
+        WHERE sp.employee_id = td.employee_id
+          AND sp.event_date  = td.event_date
+    """
+    return update, ""
+
+
+def _sql_osint_instagram(ingested_at: str) -> tuple[str, str]:
+    """
+    Instagram — INSERT silver_geo_anomalies.
+    Identity: post handle → employee_id via ext_social_handle_map.
+    Location classification and anomaly flagging done in SQL.
+    """
+    resolved = f"""
+        INSERT INTO {SILVER_SCHEMA}.silver_geo_anomalies (
+            post_id, event_date, employee_id,
+            source_domain, source_file, record_hash,
+            ingested_at, transformed_at, pipeline_version,
+            identity_resolution_status,
+            classified_location_type, anomaly_flag,
+            work_hours_flag, incongruity_flag
+        )
+        SELECT
+            ig.post_id,
+            ig.scraped_datetime::DATE                                AS event_date,
+            sm.employee_id,
+            'instagram'                                              AS source_domain,
+            'raw_instagram_posts.csv'                                AS source_file,
+            md5(ig.post_id || '|' || ig.handle)                     AS record_hash,
+            '{ingested_at}'::TIMESTAMPTZ                             AS ingested_at,
+            NOW()                                                    AS transformed_at,
+            '{PIPELINE_VERSION}'                                     AS pipeline_version,
+            'RESOLVED'                                               AS identity_resolution_status,
+            CASE
+                WHEN ig.location_string ILIKE '%embassy%'    OR ig.location_string ILIKE '%pentagon%'
+                  OR ig.location_string ILIKE '%military%'   OR ig.location_string ILIKE '%fort %'
+                  OR ig.location_string ILIKE '%base%'                           THEN 'sensitive_government'
+                WHEN ig.location_string ILIKE '%airport%'    OR ig.location_string ILIKE '%international%'
+                  OR ig.location_string ILIKE '%terminal%'                       THEN 'travel_hub'
+                WHEN ig.location_lat IS NOT NULL
+                  AND (ig.location_lat < 38.5 OR ig.location_lat > 39.1
+                    OR ig.location_lon < -77.5 OR ig.location_lon > -76.8)      THEN 'unusual_travel'
+                WHEN ig.post_type = 'check_in'                                   THEN 'standard_checkin'
+                ELSE                                                                  'standard'
+            END                                                      AS classified_location_type,
+            CASE
+                WHEN ig.location_string ILIKE '%embassy%'  OR ig.location_string ILIKE '%pentagon%'
+                  OR ig.location_string ILIKE '%military%' OR ig.location_string ILIKE '%fort %'
+                  OR ig.location_string ILIKE '%base%'
+                  OR (ig.location_lat IS NOT NULL
+                      AND (ig.location_lat < 38.5 OR ig.location_lat > 39.1
+                        OR ig.location_lon < -77.5 OR ig.location_lon > -76.8)) THEN TRUE
+                ELSE FALSE
+            END                                                      AS anomaly_flag,
+            EXTRACT(HOUR FROM ig.scraped_datetime) BETWEEN 9 AND 17  AS work_hours_flag,
+            CASE
+                WHEN ig.location_string ILIKE '%casino%'   OR ig.location_string ILIKE '%luxury%'
+                  OR ig.location_string ILIKE '%yacht%'    OR ig.location_string ILIKE '%resort%'
+                  OR ig.location_string ILIKE '%five star%'                      THEN TRUE
+                ELSE FALSE
+            END                                                      AS incongruity_flag
+        FROM {BRONZE_SCHEMA}.ext_raw_instagram_posts ig
+        JOIN {BRONZE_SCHEMA}.ext_social_handle_map sm
+            ON ig.handle = sm.social_handle
+            AND sm.employee_id IS NOT NULL
+    """
+    unresolved = f"""
+        INSERT INTO {SILVER_SCHEMA}.sv_unresolved_events (
+            source_domain, source_file, raw_identifier, identifier_type,
+            record_hash, identity_resolution_status,
+            ingested_at, pipeline_version, raw_record
+        )
+        SELECT
+            'instagram', 'raw_instagram_posts.csv', ig.handle, 'social_handle',
+            md5(ig.post_id || '|' || ig.handle),
+            'UNRESOLVED',
+            '{ingested_at}'::TIMESTAMPTZ,
+            '{PIPELINE_VERSION}',
+            ig.post_id || '|' || ig.handle || '|' || ig.scraped_datetime::text
+        FROM {BRONZE_SCHEMA}.ext_raw_instagram_posts ig
+        LEFT JOIN {BRONZE_SCHEMA}.ext_social_handle_map sm
+            ON ig.handle = sm.social_handle AND sm.employee_id IS NOT NULL
+        WHERE sm.social_handle IS NULL
+    """
+    return resolved, unresolved
+
+
+def _sql_osint_lifestyle(ingested_at: str) -> tuple[str, str]:
+    """
+    Lifestyle signals — INSERT silver_lifestyle_incongruity.
+    Identity: signal handle → employee_id via ext_social_handle_map.
+    Joins sv_hris for salary_band derivation and incongruity scoring.
+    """
+    resolved = f"""
+        INSERT INTO {SILVER_SCHEMA}.silver_lifestyle_incongruity (
+            signal_id, event_date, employee_id,
+            source_domain, source_file, record_hash,
+            ingested_at, transformed_at, pipeline_version,
+            identity_resolution_status,
+            signal_type, estimated_value_usd,
+            salary_band, incongruity_score, cumulative_30day_spend
+        )
+        WITH base AS (
+            SELECT
+                ls.signal_id,
+                ls.scraped_datetime::DATE                            AS event_date,
+                sm.employee_id,
+                ls.signal_source                                     AS signal_type,
+                COALESCE(ls.estimated_value_usd, 0)                  AS estimated_value_usd,
+                CASE
+                    WHEN h.role_title ILIKE '%senior%'    OR h.role_title ILIKE '%director%'
+                      OR h.role_title ILIKE '%chief%'     OR h.role_title ILIKE '% vp%'
+                      OR h.role_title ILIKE '%executive%' OR h.role_title ILIKE '%principal%'
+                                                                     THEN 'senior'
+                    WHEN h.role_title ILIKE '%manager%'   OR h.role_title ILIKE '%lead%'
+                      OR h.role_title ILIKE '%analyst%'   OR h.role_title ILIKE '%engineer%'
+                                                                     THEN 'mid'
+                    ELSE                                                  'low'
+                END                                                  AS salary_band,
+                md5(ls.signal_id || '|' || sm.employee_id)           AS record_hash
+            FROM {BRONZE_SCHEMA}.ext_raw_lifestyle_signals ls
+            JOIN {BRONZE_SCHEMA}.ext_social_handle_map sm
+                ON ls.handle = sm.social_handle AND sm.employee_id IS NOT NULL
+            LEFT JOIN {SILVER_SCHEMA}.sv_hris h USING (employee_id)
+        )
+        SELECT
+            b.signal_id, b.event_date, b.employee_id,
+            'lifestyle'                                              AS source_domain,
+            'raw_lifestyle_signals.csv'                              AS source_file,
+            b.record_hash,
+            '{ingested_at}'::TIMESTAMPTZ                             AS ingested_at,
+            NOW()                                                    AS transformed_at,
+            '{PIPELINE_VERSION}'                                     AS pipeline_version,
+            'RESOLVED'                                               AS identity_resolution_status,
+            b.signal_type,
+            b.estimated_value_usd,
+            b.salary_band,
+            ROUND(CAST(b.estimated_value_usd AS FLOAT8) /
+                CASE b.salary_band
+                    WHEN 'senior' THEN 5000.0
+                    WHEN 'mid'    THEN 2000.0
+                    ELSE               1000.0
+                END, 4)                                              AS incongruity_score,
+            SUM(b.estimated_value_usd) OVER (
+                PARTITION BY b.employee_id
+                ORDER BY b.event_date
+                ROWS BETWEEN 29 PRECEDING AND CURRENT ROW
+            )                                                        AS cumulative_30day_spend
+        FROM base b
+    """
+    unresolved = f"""
+        INSERT INTO {SILVER_SCHEMA}.sv_unresolved_events (
+            source_domain, source_file, raw_identifier, identifier_type,
+            record_hash, identity_resolution_status,
+            ingested_at, pipeline_version, raw_record
+        )
+        SELECT
+            'lifestyle', 'raw_lifestyle_signals.csv', ls.handle, 'social_handle',
+            md5(ls.signal_id || '|' || ls.handle),
+            'UNRESOLVED',
+            '{ingested_at}'::TIMESTAMPTZ,
+            '{PIPELINE_VERSION}',
+            ls.signal_id || '|' || ls.handle || '|' || ls.scraped_datetime::text
+        FROM {BRONZE_SCHEMA}.ext_raw_lifestyle_signals ls
+        LEFT JOIN {BRONZE_SCHEMA}.ext_social_handle_map sm
+            ON ls.handle = sm.social_handle AND sm.employee_id IS NOT NULL
+        WHERE sm.social_handle IS NULL
+    """
+    return resolved, unresolved
+
+
+def _sql_osint_financial(ingested_at: str) -> tuple[str, str]:
+    """
+    Financial stress — INSERT silver_financial_stress.
+    Identity: direct (employee_id native in Bronze).
+    record_type and amount_usd parsed from raw_json.
+    stress_score and cumulative computed via window function.
+    """
+    resolved = f"""
+        INSERT INTO {SILVER_SCHEMA}.silver_financial_stress (
+            record_id, event_date, employee_id,
+            source_domain, source_file, record_hash,
+            ingested_at, transformed_at, pipeline_version,
+            identity_resolution_status,
+            record_type, amount_usd,
+            stress_score, cumulative_stress_score
+        )
+        WITH base AS (
+            SELECT
+                fs.record_id,
+                fs.scraped_datetime::DATE                            AS event_date,
+                fs.employee_id,
+                COALESCE(fs.raw_json::json->>'type', fs.source)      AS record_type,
+                COALESCE((fs.raw_json::json->>'amount')::INT, 0)     AS amount_usd,
+                md5(fs.record_id || '|' || fs.employee_id)           AS record_hash,
+                CASE COALESCE(fs.raw_json::json->>'type', fs.source)
+                    WHEN 'bankruptcy_filing' THEN 1.0
+                    WHEN 'lien'              THEN 0.7
+                    WHEN 'eviction_notice'   THEN 0.6
+                    WHEN 'civil_judgment'    THEN 0.5
+                    ELSE                          0.3
+                END                                                  AS stress_score
+            FROM {BRONZE_SCHEMA}.ext_raw_financial_stress fs
+        )
+        SELECT
+            b.record_id, b.event_date, b.employee_id,
+            'financial_stress'                                       AS source_domain,
+            'raw_financial_stress.csv'                               AS source_file,
+            b.record_hash,
+            '{ingested_at}'::TIMESTAMPTZ                             AS ingested_at,
+            NOW()                                                    AS transformed_at,
+            '{PIPELINE_VERSION}'                                     AS pipeline_version,
+            'RESOLVED'                                               AS identity_resolution_status,
+            b.record_type,
+            b.amount_usd,
+            b.stress_score,
+            SUM(b.stress_score) OVER (
+                PARTITION BY b.employee_id
+                ORDER BY b.event_date
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            )                                                        AS cumulative_stress_score
+        FROM base b
+    """
+    # Financial stress uses employee_id directly — no unresolved path
+    return resolved, ""
+
+
+def _sql_osint_darkweb(ingested_at: str) -> tuple[str, str]:
+    """
+    Dark web signals — INSERT silver_darkweb_signals.
+    Identity: dual-path — email → ext_directory OR social_handle → ext_social_handle_map.
+    signal_type, severity parsed from raw_json; confidence_score derived from severity.
+    """
+    resolved = f"""
+        INSERT INTO {SILVER_SCHEMA}.silver_darkweb_signals (
+            detection_id, event_date, employee_id,
+            source_domain, source_file, record_hash,
+            ingested_at, transformed_at, pipeline_version,
+            identity_resolution_status,
+            signal_type, severity, confidence_score, matched_on
+        )
+        SELECT
+            dw.detection_id,
+            dw.scraped_datetime::DATE                                AS event_date,
+            COALESCE(dir.employee_id, sm.employee_id)               AS employee_id,
+            'darkweb'                                                AS source_domain,
+            'raw_darkweb_signals.csv'                                AS source_file,
+            md5(dw.detection_id || '|' || dw.handle)               AS record_hash,
+            '{ingested_at}'::TIMESTAMPTZ                             AS ingested_at,
+            NOW()                                                    AS transformed_at,
+            '{PIPELINE_VERSION}'                                     AS pipeline_version,
+            'RESOLVED'                                               AS identity_resolution_status,
+            COALESCE(dw.raw_json::json->>'type', dw.signal_source)  AS signal_type,
+            COALESCE(dw.raw_json::json->>'severity', 'low')         AS severity,
+            CASE COALESCE(dw.raw_json::json->>'severity', 'low')
+                WHEN 'high'   THEN 0.75 + (ABS(hashtext(dw.detection_id)) % 20) / 100.0
+                WHEN 'medium' THEN 0.45 + (ABS(hashtext(dw.detection_id)) % 30) / 100.0
+                ELSE               0.15 + (ABS(hashtext(dw.detection_id)) % 25) / 100.0
+            END                                                      AS confidence_score,
+            dw.matched_on
+        FROM {BRONZE_SCHEMA}.ext_raw_darkweb_signals dw
+        LEFT JOIN {BRONZE_SCHEMA}.ext_directory dir
+            ON dw.matched_on = 'email' AND dw.handle = dir.email_address
+        LEFT JOIN {BRONZE_SCHEMA}.ext_social_handle_map sm
+            ON dw.matched_on = 'social_handle' AND dw.handle = sm.social_handle
+            AND sm.employee_id IS NOT NULL
+        WHERE COALESCE(dir.employee_id, sm.employee_id) IS NOT NULL
+    """
+    unresolved = f"""
+        INSERT INTO {SILVER_SCHEMA}.sv_unresolved_events (
+            source_domain, source_file, raw_identifier, identifier_type,
+            record_hash, identity_resolution_status,
+            ingested_at, pipeline_version, raw_record
+        )
+        SELECT
+            'darkweb', 'raw_darkweb_signals.csv', dw.handle, dw.matched_on,
+            md5(dw.detection_id || '|' || dw.handle),
+            'UNRESOLVED',
+            '{ingested_at}'::TIMESTAMPTZ,
+            '{PIPELINE_VERSION}',
+            dw.detection_id || '|' || dw.handle || '|' || dw.scraped_datetime::text
+        FROM {BRONZE_SCHEMA}.ext_raw_darkweb_signals dw
+        LEFT JOIN {BRONZE_SCHEMA}.ext_directory dir
+            ON dw.matched_on = 'email' AND dw.handle = dir.email_address
+        LEFT JOIN {BRONZE_SCHEMA}.ext_social_handle_map sm
+            ON dw.matched_on = 'social_handle' AND dw.handle = sm.social_handle
+            AND sm.employee_id IS NOT NULL
+        WHERE COALESCE(dir.employee_id, sm.employee_id) IS NULL
+    """
+    return resolved, unresolved
+
+
+# ---------------------------------------------------------------------------
 # Core executor
 # ---------------------------------------------------------------------------
 
@@ -505,12 +843,16 @@ def _resolve_domain(
     resolved_sql: str,
     unresolved_sql: str,
     dry_run: bool,
+    table_override: str | None = None,
+    skip_truncate: bool = False,
 ) -> tuple[int, int]:
     """
     TRUNCATE the Silver table, execute the resolved INSERT, then the unresolved INSERT.
     Returns (resolved_count, unresolved_count).
+    table_override: use a specific fully-qualified table name instead of sv_{domain}.
+    skip_truncate: do not truncate before inserting (used for UPDATE-mode OSINT domains).
     """
-    silver_table = f"{SILVER_SCHEMA}.sv_{domain}"
+    silver_table = table_override or f"{SILVER_SCHEMA}.sv_{domain}"
 
     if dry_run:
         logger.info("[DRY-RUN] Would resolve %s via SQL in GP", domain)
@@ -519,7 +861,8 @@ def _resolve_domain(
     with get_connection(env) as conn:
         conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute(f"TRUNCATE {silver_table}")
+            if not skip_truncate:
+                cur.execute(f"TRUNCATE {silver_table}")
             cur.execute(resolved_sql)
             resolved_n = cur.rowcount
 
@@ -568,13 +911,38 @@ _DOMAIN_SQL_MAP = {
     "pai":          _sql_pai,
     "geo":          _sql_geo,
     "adjudication": _sql_adjudication,
+    # OSINT streams
+    "osint_twitter":    _sql_osint_twitter,
+    "osint_instagram":  _sql_osint_instagram,
+    "osint_lifestyle":  _sql_osint_lifestyle,
+    "osint_financial":  _sql_osint_financial,
+    "osint_darkweb":    _sql_osint_darkweb,
+}
+
+# OSINT domains: maps domain key → (silver_table_name, skip_truncate)
+# skip_truncate=True for twitter because it UPDATEs sv_pai rather than INSERTing a new table
+_OSINT_TABLE_MAP: dict[str, tuple[str, bool]] = {
+    "osint_twitter":   (f"{SILVER_SCHEMA}.sv_pai",                       True),
+    "osint_instagram": (f"{SILVER_SCHEMA}.silver_geo_anomalies",         False),
+    "osint_lifestyle": (f"{SILVER_SCHEMA}.silver_lifestyle_incongruity",  False),
+    "osint_financial": (f"{SILVER_SCHEMA}.silver_financial_stress",       False),
+    "osint_darkweb":   (f"{SILVER_SCHEMA}.silver_darkweb_signals",        False),
+}
+
+# Parquet output name for each OSINT domain (file in /data/silver/)
+_OSINT_PARQUET_NAME: dict[str, str] = {
+    "osint_twitter":   "sv_pai_osint",
+    "osint_instagram": "silver_geo_anomalies",
+    "osint_lifestyle": "silver_lifestyle_incongruity",
+    "osint_financial": "silver_financial_stress",
+    "osint_darkweb":   "silver_darkweb_signals",
 }
 
 
 def run_domain(domain: str, dry_run: bool = False, env: str = "local",
                log_level: str = "INFO") -> dict:
     """
-    Resolve and load a single Silver domain.
+    Resolve and load a single Silver domain (internal or OSINT).
     Called by the Airflow DAG for each domain task running in parallel.
     Returns standard stage result dict.
     """
@@ -592,14 +960,28 @@ def run_domain(domain: str, dry_run: bool = False, env: str = "local",
     sql_fn = _DOMAIN_SQL_MAP[domain]
     resolved_sql, unresolved_sql = sql_fn(ingested_at)
 
-    resolved_n, unresolved_n = _resolve_domain(env, domain, resolved_sql, unresolved_sql, dry_run)
+    # Determine table name and execution mode
+    if domain in _OSINT_TABLE_MAP:
+        table_override, skip_truncate = _OSINT_TABLE_MAP[domain]
+        parquet_name = _OSINT_PARQUET_NAME[domain]
+        # Parquet reads from the actual Silver table (strip schema prefix)
+        silver_tbl_short = table_override.split(".")[-1]
+    else:
+        table_override, skip_truncate = None, False
+        parquet_name = f"sv_{domain}"
+        silver_tbl_short = f"sv_{domain}"
+
+    resolved_n, unresolved_n = _resolve_domain(
+        env, domain, resolved_sql, unresolved_sql, dry_run,
+        table_override=table_override, skip_truncate=skip_truncate,
+    )
     total = resolved_n + unresolved_n
     _check_resolution_rate(domain, total, resolved_n)
 
     artifacts = []
     if not dry_run:
-        df = _read_silver_table(env, f"sv_{domain}")
-        artifacts.append(_write_parquet(df, f"sv_{domain}", dry_run=False))
+        df = _read_silver_table(env, silver_tbl_short)
+        artifacts.append(_write_parquet(df, parquet_name, dry_run=False))
 
     duration = time.perf_counter() - t0
     logger.info("s2_transform_silver [%s] DONE | resolved=%d unresolved=%d duration=%.2fs",
@@ -647,8 +1029,8 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
                 with conn.cursor() as cur:
                     cur.execute(f"TRUNCATE {SILVER_SCHEMA}.sv_unresolved_events")
 
-        # Domain registry: name → (resolved_sql, unresolved_sql)
-        domain_sqls = {
+        # Internal domain registry: name → (resolved_sql, unresolved_sql)
+        internal_domains = {
             "hris":         _sql_hris(ingested_at),
             "pacs":         _sql_pacs(ingested_at),
             "network":      _sql_network(ingested_at),
@@ -659,7 +1041,7 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
             "adjudication": _sql_adjudication(ingested_at),
         }
 
-        for domain, (resolved_sql, unresolved_sql) in domain_sqls.items():
+        for domain, (resolved_sql, unresolved_sql) in internal_domains.items():
             logger.info("Resolving %s in GP...", domain)
             resolved_n, unresolved_n = _resolve_domain(
                 env, domain, resolved_sql, unresolved_sql, dry_run
@@ -680,7 +1062,42 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
                 parquet_path = str(SILVER_DIR / f"sv_{domain}.parquet")
             artifacts.append(parquet_path)
 
-        _write_lineage_map(list(domain_sqls.keys()), dry_run)
+        # OSINT domain registry (run after internal, some depend on sv_hris)
+        osint_domains = {
+            "osint_twitter":   _sql_osint_twitter(ingested_at),
+            "osint_instagram": _sql_osint_instagram(ingested_at),
+            "osint_lifestyle": _sql_osint_lifestyle(ingested_at),
+            "osint_financial": _sql_osint_financial(ingested_at),
+            "osint_darkweb":   _sql_osint_darkweb(ingested_at),
+        }
+
+        for domain, (resolved_sql, unresolved_sql) in osint_domains.items():
+            logger.info("Resolving OSINT %s in GP...", domain)
+            table_override, skip_truncate = _OSINT_TABLE_MAP[domain]
+            parquet_name = _OSINT_PARQUET_NAME[domain]
+            silver_tbl_short = table_override.split(".")[-1]
+
+            resolved_n, unresolved_n = _resolve_domain(
+                env, domain, resolved_sql, unresolved_sql, dry_run,
+                table_override=table_override, skip_truncate=skip_truncate,
+            )
+
+            total = resolved_n + unresolved_n
+            rows_in          += total
+            rows_out         += resolved_n
+            total_unresolved += unresolved_n
+
+            _check_resolution_rate(domain, total, resolved_n)
+
+            if not dry_run:
+                df = _read_silver_table(env, silver_tbl_short)
+                parquet_path = _write_parquet(df, parquet_name, dry_run=False)
+            else:
+                parquet_path = str(SILVER_DIR / f"{parquet_name}.parquet")
+            artifacts.append(parquet_path)
+
+        all_domains = list(internal_domains.keys()) + list(osint_domains.keys())
+        _write_lineage_map(all_domains, dry_run)
 
         duration = time.perf_counter() - t0
         logger.info(

@@ -22,10 +22,18 @@ import json
 import logging
 import os
 import random
+import sys
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+# Ensure the scripts directory is on the path so generate_osint_streams is importable
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+import generate_osint_streams
 
 import numpy as np
 import pandas as pd
@@ -730,23 +738,36 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
 
         _write_schema_map(dry_run)
 
-        # Row counts
-        rows_out = (
+        # Row counts (internal streams)
+        internal_rows = (
             len(badge_reg) + len(asset_asgn) + len(directory) + len(social_map)
             + len(hris) + len(pacs) + len(network) + len(dlp)
             + len(comms) + len(pai) + len(geo) + len(adj)
         )
 
+        # ---- OSINT Bronze streams ----
+        logger.info("Generating OSINT Bronze streams...")
+        osint_result = generate_osint_streams.run(
+            dry_run=dry_run, env=env, log_level=log_level
+        )
+        if osint_result["status"] != "success":
+            raise RuntimeError(f"OSINT generation failed: {osint_result}")
+        artifacts.extend(osint_result["artifacts"])
+        osint_rows = osint_result["rows_out"]
+
+        rows_out = internal_rows + osint_rows
+
         duration = time.perf_counter() - t0
-        logger.info("s1_generate_raw DONE | rows_out=%d duration=%.2fs", rows_out, duration)
+        logger.info("s1_generate_raw DONE | rows_out=%d (internal=%d osint=%d) duration=%.2fs",
+                    rows_out, internal_rows, osint_rows, duration)
 
         # Summary log
         logger.info("Row counts — badge_registry:%d asset_assignment:%d directory:%d "
                     "social_handle_map:%d hris:%d pacs:%d network:%d dlp:%d "
-                    "comms:%d pai:%d geo:%d adjudication:%d",
+                    "comms:%d pai:%d geo:%d adjudication:%d osint:%d",
                     len(badge_reg), len(asset_asgn), len(directory), len(social_map),
                     len(hris), len(pacs), len(network), len(dlp),
-                    len(comms), len(pai), len(geo), len(adj))
+                    len(comms), len(pai), len(geo), len(adj), osint_rows)
 
         return {
             "status": "success",
