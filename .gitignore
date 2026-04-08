@@ -17,14 +17,6 @@ data/gold/*
 !data/silver/.gitkeep
 !data/gold/.gitkeep
 
-# Old agent-named scripts (superseded by s0-s6 naming)
-agents/agent0_orchestrator.py
-agents/agent1_bronze.py
-agents/agent2_silver.py
-agents/agent3_gold.py
-agents/agent4_platform.py
-agents/agent5_validation.py
-agents/agent6_analytics.py
 
 # Python
 __pycache__/

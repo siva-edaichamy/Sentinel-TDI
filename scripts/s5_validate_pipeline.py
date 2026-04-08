@@ -1,5 +1,5 @@
 """
-agent5_validation.py — Pipeline QA and lineage checks.
+s5_validate_pipeline.py — Pipeline QA and lineage checks.
 
 Runs all validation targets from CLAUDE.md against live Greenplum data
 and writes reports/validation_report.md.
@@ -34,7 +34,7 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agents.db import get_connection
+from db import get_connection
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_PROJECT_ROOT / ".env")
@@ -349,7 +349,7 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
     t0 = time.perf_counter()
-    logger.info("agent5_validation START | dry_run=%s env=%s", dry_run, env)
+    logger.info("s5_validate_pipeline START | dry_run=%s env=%s", dry_run, env)
 
     all_checks: list[CheckResult] = []
     artifacts: list[str] = []
@@ -398,7 +398,7 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
 
     except Exception as exc:
         duration = time.perf_counter() - t0
-        logger.exception("agent5_validation FAILED: %s", exc)
+        logger.exception("s5_validate_pipeline FAILED: %s", exc)
         return {
             "status": "failure",
             "rows_in": 0,
@@ -413,7 +413,7 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="agent5_validation — pipeline QA and lineage checks")
+    p = argparse.ArgumentParser(description="s5_validate_pipeline — pipeline QA and lineage checks")
     p.add_argument("--dry-run",   action="store_true")
     p.add_argument("--env",       default="local", choices=["local", "dev", "prod"])
     p.add_argument("--log-level", default="INFO",  choices=["DEBUG", "INFO", "WARNING"])

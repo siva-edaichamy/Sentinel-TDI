@@ -1,4 +1,4 @@
--- analytics_queries.sql — Agent 6 dashboard and executive report queries
+-- analytics_queries.sql — s6_report_analytics dashboard and executive report queries
 
 -- 1. Top 25 highest-risk employees (latest window)
 SELECT
@@ -89,7 +89,7 @@ GROUP BY source_domain, identity_resolution_status
 ORDER BY source_domain, identity_resolution_status;
 
 -- 6. Pipeline lineage audit
-SELECT run_id, agent_name, status, rows_in, rows_out, duration_seconds, started_at
+SELECT run_id, stage_name, status, rows_in, rows_out, duration_seconds, started_at
 FROM insider_threat_bronze.pipeline_runs
 ORDER BY started_at DESC
 LIMIT 20;

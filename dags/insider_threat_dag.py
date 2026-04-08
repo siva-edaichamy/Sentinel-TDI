@@ -23,7 +23,7 @@ from airflow.exceptions import AirflowException
 from airflow.utils.dates import days_ago
 
 # Make pipeline scripts importable from Airflow worker
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agents"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import s1_generate_raw
 import s2_transform_silver

@@ -8,7 +8,7 @@ applications:
     instances: 1
     buildpacks:
       - python_buildpack
-    command: python agents/s0_orchestrate.py --env prod --log-level INFO
+    command: python scripts/s0_orchestrate.py --env prod --log-level INFO
     env:
       RANDOM_SEED: "42"
       EMPLOYEE_COUNT: "500"

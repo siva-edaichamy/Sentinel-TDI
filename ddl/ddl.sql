@@ -16,10 +16,10 @@ CREATE SCHEMA IF NOT EXISTS insider_threat_gold;
 -- BRONZE — Mapping tables and pipeline audit
 -- =============================================================================
 
--- Pipeline run audit (all agents write here)
+-- Pipeline run audit (all pipeline stages write here)
 CREATE TABLE IF NOT EXISTS insider_threat_bronze.pipeline_runs (
     run_id              VARCHAR(64)     NOT NULL,
-    agent_name          VARCHAR(50)     NOT NULL,
+    stage_name          VARCHAR(50)     NOT NULL,
     started_at          TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
     completed_at        TIMESTAMPTZ,
     status              VARCHAR(20)     NOT NULL,   -- running | success | failure

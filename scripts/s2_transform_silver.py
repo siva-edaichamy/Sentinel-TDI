@@ -39,7 +39,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from dotenv import load_dotenv
 
-from agents.db import get_connection
+from db import get_connection
 
 # ---------------------------------------------------------------------------
 # Config
@@ -576,7 +576,7 @@ def run_domain(domain: str, dry_run: bool = False, env: str = "local",
     """
     Resolve and load a single Silver domain.
     Called by the Airflow DAG for each domain task running in parallel.
-    Returns standard agent result dict.
+    Returns standard stage result dict.
     """
     logging.basicConfig(
         level=getattr(logging, log_level.upper(), logging.INFO),
@@ -623,7 +623,7 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
     Resolve identities via SQL and load all Silver domain tables in Greenplum.
     Reads Bronze data from ext_* PXF external tables — no local file reads.
 
-    Returns standard agent result dict.
+    Returns standard stage result dict.
     """
     logging.basicConfig(
         level=getattr(logging, log_level.upper(), logging.INFO),

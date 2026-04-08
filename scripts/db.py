@@ -1,7 +1,7 @@
 """
-db.py — Shared Greenplum connection factory for all agents.
+db.py — Shared Greenplum connection factory for all pipeline scripts.
 
-All agents import get_connection() or get_pool() from here.
+All scripts import get_connection() or get_pool() from here.
 Credentials are loaded from environment variables (populated via .env).
 """
 
@@ -87,7 +87,7 @@ def get_connection(env: str = "local"):
 
 
 def close_all_pools() -> None:
-    """Close all open connection pools. Call at agent shutdown."""
+    """Close all open connection pools. Call at pipeline shutdown."""
     for env, pool in _pools.items():
         logger.debug("Closing connection pool for env=%s", env)
         pool.closeall()

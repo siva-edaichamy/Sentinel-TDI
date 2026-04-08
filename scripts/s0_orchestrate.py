@@ -1,16 +1,16 @@
 """
-agent0_orchestrator.py — Full pipeline orchestration.
+s0_orchestrate.py — Full pipeline orchestration.
 
-Calls each agent's run() directly (not subprocess) in strict dependency order.
+Calls each stage's run() directly (not subprocess) in strict dependency order.
 Uses the standard return dict to decide whether to proceed or halt.
 
 Execution order:
-    agent1_bronze   (no deps)
-    agent2_silver   (requires bronze)
-    agent3_gold     (requires silver)
-    agent4_platform (requires gold — generates platform artifacts)
-    agent5_validation (requires gold)
-    agent6_analytics  (requires gold + validation)
+    s1_generate_raw      (no deps)
+    s2_transform_silver  (requires bronze)
+    s3_score_gold        (requires silver)
+    s4_build_platform    (requires gold — generates platform artifacts)
+    s5_validate_pipeline (requires gold)
+    s6_report_analytics  (requires gold + validation)
 
 Writes a pipeline run record to insider_threat_bronze.pipeline_runs after each stage.
 """
@@ -41,7 +41,7 @@ import s4_build_platform as s4_build_platform
 import s5_validate_pipeline as s5_validate_pipeline
 import s6_report_analytics as s6_report_analytics
 
-from agents.db import get_connection, close_all_pools
+from db import get_connection, close_all_pools
 
 logger = logging.getLogger(__name__)
 
@@ -53,26 +53,26 @@ logger = logging.getLogger(__name__)
 def _log_run(
     env: str,
     run_id: str,
-    agent_name: str,
+    stage_name: str,
     status: str,
     result: dict,
     dry_run: bool,
 ) -> None:
     """Write a pipeline_runs record to the Bronze audit table."""
     if dry_run:
-        logger.debug("[DRY-RUN] Would log pipeline run for %s", agent_name)
+        logger.debug("[DRY-RUN] Would log pipeline run for %s", stage_name)
         return
     try:
         with get_connection(env) as conn:
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO insider_threat_bronze.pipeline_runs
-                        (run_id, agent_name, started_at, completed_at, status,
+                        (run_id, stage_name, started_at, completed_at, status,
                          rows_in, rows_out, duration_seconds, artifacts, notes)
                     VALUES (%s, %s, NOW(), NOW(), %s, %s, %s, %s, %s, %s)
                 """, (
                     run_id,
-                    agent_name,
+                    stage_name,
                     status,
                     result.get("rows_in", 0),
                     result.get("rows_out", 0),
@@ -83,7 +83,7 @@ def _log_run(
                 ))
             conn.commit()
     except Exception as e:
-        logger.warning("Failed to log pipeline run for %s: %s", agent_name, e)
+        logger.warning("Failed to log pipeline run for %s: %s", stage_name, e)
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +91,7 @@ def _log_run(
 # ---------------------------------------------------------------------------
 
 def _run_stage(
-    agent_module,
+    stage_module,
     stage_name: str,
     run_id: str,
     dry_run: bool,
@@ -100,14 +100,14 @@ def _run_stage(
     halt_on_failure: bool = True,
 ) -> dict:
     """
-    Run a single agent stage, log the result, and optionally halt on failure.
-    Returns the agent result dict.
+    Run a single pipeline stage, log the result, and optionally halt on failure.
+    Returns the stage result dict.
     """
     logger.info("=" * 60)
     logger.info("STAGE START: %s", stage_name)
     logger.info("=" * 60)
 
-    result = agent_module.run(dry_run=dry_run, env=env, log_level=log_level)
+    result = stage_module.run(dry_run=dry_run, env=env, log_level=log_level)
 
     status = result.get("status", "failure")
     rows_out = result.get("rows_out", 0)
@@ -165,9 +165,9 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
     ]
 
     try:
-        for agent_module, stage_name in stages:
+        for stage_module, stage_name in stages:
             result = _run_stage(
-                agent_module, stage_name, pipeline_run_id,
+                stage_module, stage_name, pipeline_run_id,
                 dry_run=dry_run, env=env, log_level=log_level,
             )
             stage_results[stage_name] = result
@@ -226,9 +226,9 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="agent0_orchestrator — full pipeline run")
+    p = argparse.ArgumentParser(description="s0_orchestrate — full pipeline run")
     p.add_argument("--dry-run",   action="store_true",
-                   help="Pass --dry-run to all agents (no file or DB writes)")
+                   help="Pass --dry-run to all stages (no file or DB writes)")
     p.add_argument("--env",       default="local", choices=["local", "dev", "prod"])
     p.add_argument("--log-level", default="INFO",  choices=["DEBUG", "INFO", "WARNING"])
     p.add_argument("--from-stage", default=None,
@@ -270,8 +270,8 @@ if __name__ == "__main__":
             stage_results = {}
             artifacts = []
             try:
-                for agent_module, stage_name in all_stages[_skip:]:
-                    result = _run_stage(agent_module, stage_name, run_id,
+                for stage_module, stage_name in all_stages[_skip:]:
+                    result = _run_stage(stage_module, stage_name, run_id,
                                         dry_run=dry_run, env=env, log_level=log_level)
                     stage_results[stage_name] = result
                     artifacts.extend(result.get("artifacts", []))

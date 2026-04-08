@@ -1,5 +1,5 @@
 """
-agent6_analytics.py — Executive analytics and case narratives.
+s6_report_analytics.py — Executive analytics and case narratives.
 
 Queries the Gold layer to produce:
   1. Executive summary (top risks, cluster profile, domain signal breakdown)
@@ -27,7 +27,7 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agents.db import get_connection
+from db import get_connection
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_PROJECT_ROOT / ".env")
@@ -306,7 +306,7 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
     t0 = time.perf_counter()
-    logger.info("agent6_analytics START | dry_run=%s env=%s", dry_run, env)
+    logger.info("s6_report_analytics START | dry_run=%s env=%s", dry_run, env)
 
     artifacts: list[str] = []
 
@@ -343,7 +343,7 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
         artifacts.append(str(path))
 
         duration = time.perf_counter() - t0
-        logger.info("agent6_analytics DONE | duration=%.2fs", duration)
+        logger.info("s6_report_analytics DONE | duration=%.2fs", duration)
 
         return {
             "status": "success",
@@ -355,7 +355,7 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
 
     except Exception as exc:
         duration = time.perf_counter() - t0
-        logger.exception("agent6_analytics FAILED: %s", exc)
+        logger.exception("s6_report_analytics FAILED: %s", exc)
         return {
             "status": "failure",
             "rows_in": 0,
@@ -370,7 +370,7 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="agent6_analytics — executive analytics and case narratives")
+    p = argparse.ArgumentParser(description="s6_report_analytics — executive analytics and case narratives")
     p.add_argument("--dry-run",   action="store_true")
     p.add_argument("--env",       default="local", choices=["local", "dev", "prod"])
     p.add_argument("--log-level", default="INFO",  choices=["DEBUG", "INFO", "WARNING"])

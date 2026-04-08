@@ -8,7 +8,7 @@ Generates:
   4. sql/madlib_score.sql           — Anomaly scoring SQL (final form)
   5. manifest.yml                   — Cloud Foundry TAS deployment manifest
 
-This agent writes/overwrites these artifacts. It does NOT execute them.
+This script writes/overwrites these artifacts. It does NOT execute them.
 """
 
 from __future__ import annotations
@@ -69,7 +69,7 @@ from airflow.exceptions import AirflowException
 from airflow.utils.dates import days_ago
 
 # Make pipeline scripts importable from Airflow worker
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agents"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import s1_generate_raw
 import s2_transform_silver
@@ -376,7 +376,7 @@ GROUP BY source_domain, identity_resolution_status
 ORDER BY source_domain, identity_resolution_status;
 
 -- 6. Pipeline lineage audit
-SELECT run_id, agent_name, status, rows_in, rows_out, duration_seconds, started_at
+SELECT run_id, stage_name, status, rows_in, rows_out, duration_seconds, started_at
 FROM insider_threat_bronze.pipeline_runs
 ORDER BY started_at DESC
 LIMIT 20;
@@ -403,7 +403,7 @@ applications:
     instances: 1
     buildpacks:
       - python_buildpack
-    command: python agents/s0_orchestrate.py --env prod --log-level INFO
+    command: python scripts/s0_orchestrate.py --env prod --log-level INFO
     env:
       RANDOM_SEED: "42"
       EMPLOYEE_COUNT: "500"
@@ -476,7 +476,7 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
 
     except Exception as exc:
         duration = time.perf_counter() - t0
-        logger.exception("agent4_platform FAILED: %s", exc)
+        logger.exception("s4_build_platform FAILED: %s", exc)
         return {
             "status": "failure",
             "rows_in": 0,

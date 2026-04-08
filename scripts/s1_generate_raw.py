@@ -1,5 +1,5 @@
 """
-agent1_bronze.py — Synthetic Bronze-layer data generation.
+s1_generate_raw.py — Synthetic Bronze-layer data generation.
 
 Generates all 8 event domains + 4 mapping tables for the insider threat demo.
 Output: /data/bronze/*.csv  (all files CSV — compatible with GP S3 external tables)
@@ -656,14 +656,14 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
     """
     Generate all Bronze synthetic data files.
 
-    Returns standard agent result dict.
+    Returns standard stage result dict.
     """
     logging.basicConfig(
         level=getattr(logging, log_level.upper(), logging.INFO),
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
     t0 = time.perf_counter()
-    logger.info("agent1_bronze START | dry_run=%s env=%s seed=%d employees=%d days=%d",
+    logger.info("s1_generate_raw START | dry_run=%s env=%s seed=%d employees=%d days=%d",
                 dry_run, env, RANDOM_SEED, EMPLOYEE_COUNT, TIMELINE_DAYS)
 
     _seed_all(RANDOM_SEED)
@@ -738,7 +738,7 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
         )
 
         duration = time.perf_counter() - t0
-        logger.info("agent1_bronze DONE | rows_out=%d duration=%.2fs", rows_out, duration)
+        logger.info("s1_generate_raw DONE | rows_out=%d duration=%.2fs", rows_out, duration)
 
         # Summary log
         logger.info("Row counts — badge_registry:%d asset_assignment:%d directory:%d "
@@ -758,7 +758,7 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
 
     except Exception as exc:
         duration = time.perf_counter() - t0
-        logger.exception("agent1_bronze FAILED: %s", exc)
+        logger.exception("s1_generate_raw FAILED: %s", exc)
         return {
             "status": "failure",
             "rows_in": 0,
@@ -773,7 +773,7 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="agent1_bronze — synthetic data generation")
+    p = argparse.ArgumentParser(description="s1_generate_raw — synthetic data generation")
     p.add_argument("--dry-run",  action="store_true", help="Validate but do not write files")
     p.add_argument("--env",      default="local", choices=["local", "dev", "prod"])
     p.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING"])

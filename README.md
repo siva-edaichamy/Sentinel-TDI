@@ -144,7 +144,7 @@ In the Airflow UI, find `insider_threat_pipeline` and click Run.
 Each stage is independently runnable:
 
 ```bash
-cd agents
+cd scripts
 
 python s1_generate_raw.py        # Generate Bronze synthetic data → uploads to MinIO
 python s2_transform_silver.py    # Resolve identities → load Silver tables in GP
@@ -156,6 +156,7 @@ python s6_report_analytics.py    # Generate executive analytics report
 To run the full pipeline in sequence:
 
 ```bash
+cd scripts
 python s0_orchestrate.py
 ```
 
@@ -187,7 +188,7 @@ Gold-layer scoring runs inside Greenplum — no external model server required.
 ## Directory structure
 
 ```
-agents/          Pipeline scripts (s0–s6)
+scripts/         Pipeline scripts (s0–s6)
 config/          PXF server config templates
 dags/            Airflow TaskFlow DAG
 data/

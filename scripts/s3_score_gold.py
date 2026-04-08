@@ -1,5 +1,5 @@
 """
-agent3_gold.py — Feature derivation and MADlib anomaly scoring (Gold layer).
+s3_score_gold.py — Feature derivation and MADlib anomaly scoring (Gold layer).
 
 Reads from Silver Greenplum tables (or Parquet fallback), derives all 13
 behavioral features per employee per 7-day rolling window, trains MADlib
@@ -36,7 +36,7 @@ try:
 except ImportError:
     _SKLEARN_AVAILABLE = False
 
-from agents.db import get_connection
+from db import get_connection
 
 # ---------------------------------------------------------------------------
 # Config
@@ -51,7 +51,7 @@ ROLLING_WINDOW   = int(os.getenv("ROLLING_WINDOW", 7))
 GOLD_DIR         = _PROJECT_ROOT / "data" / "gold"
 SILVER_SCHEMA    = "insider_threat_silver"
 GOLD_SCHEMA      = "insider_threat_gold"
-PIPELINE_VERSION = os.getenv("PIPELINE_VERSION", "agent3_gold_v1")
+PIPELINE_VERSION = os.getenv("PIPELINE_VERSION", "s3_score_gold_v1")
 KMEANS_K         = 5
 KMEANS_MAX_ITER  = 20
 KMEANS_TOLERANCE = 0.001
@@ -641,7 +641,7 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
     )
     t0 = time.perf_counter()
     model_run_id = str(uuid.uuid4())
-    logger.info("agent3_gold START | dry_run=%s env=%s model_run_id=%s", dry_run, env, model_run_id)
+    logger.info("s3_score_gold START | dry_run=%s env=%s model_run_id=%s", dry_run, env, model_run_id)
 
     artifacts: list[str] = []
     rows_out = 0
@@ -797,7 +797,7 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
         _write_feature_dict(dry_run)
 
         duration = time.perf_counter() - t0
-        logger.info("agent3_gold DONE | rows_out=%d duration=%.2fs", rows_out, duration)
+        logger.info("s3_score_gold DONE | rows_out=%d duration=%.2fs", rows_out, duration)
 
         return {
             "status": "success",
@@ -809,7 +809,7 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
 
     except Exception as exc:
         duration = time.perf_counter() - t0
-        logger.exception("agent3_gold FAILED: %s", exc)
+        logger.exception("s3_score_gold FAILED: %s", exc)
         return {
             "status": "failure",
             "rows_in": 0,
@@ -870,7 +870,7 @@ def _run_madlib_sql(env: str, model_run_id: str) -> pd.DataFrame:
     """Execute the MADlib SQL files and return scores as a DataFrame."""
     sql_dir = _PROJECT_ROOT / "sql"
 
-    # Write the SQL files if not already done (agent4 writes them formally)
+    # Write the SQL files if not already done (s4 writes them formally)
     _ensure_madlib_sql(sql_dir, model_run_id)
 
     train_sql = (sql_dir / "madlib_train.sql").read_text()
@@ -1002,7 +1002,7 @@ def _write_feature_dict(dry_run: bool) -> None:
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="agent3_gold — feature derivation and MADlib scoring")
+    p = argparse.ArgumentParser(description="s3_score_gold — feature derivation and MADlib scoring")
     p.add_argument("--dry-run",   action="store_true")
     p.add_argument("--env",       default="local", choices=["local", "dev", "prod"])
     p.add_argument("--log-level", default="INFO",  choices=["DEBUG", "INFO", "WARNING"])
