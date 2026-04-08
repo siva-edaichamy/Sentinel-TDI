@@ -202,10 +202,10 @@ def _bronze_sql() -> str:
         ("ext_pai_events",          f"{BRONZE_SCHEMA}.ext_pai_events",          "Public/social media — platform sentiment scores and post frequency"),
         ("ext_geo_events",          f"{BRONZE_SCHEMA}.ext_geo_events",          "Geospatial — building locations, device timestamps, latitude/longitude"),
         ("ext_adjudication_events", f"{BRONZE_SCHEMA}.ext_adjudication_events", "Security adjudication — clearance status, reinvestigation flags, status changes"),
-        ("badge_registry",          f"{BRONZE_SCHEMA}.badge_registry",          "Mapping table — badge ID → employee ID (used by Silver PACS and Geo resolution)"),
-        ("asset_assignment",        f"{BRONZE_SCHEMA}.asset_assignment",        "Mapping table — machine ID → employee ID with effective start/end dates"),
-        ("directory",               f"{BRONZE_SCHEMA}.directory",               "Mapping table — email address and Slack handle → employee ID"),
-        ("social_handle_map",       f"{BRONZE_SCHEMA}.social_handle_map",       "Mapping table — social media handle → employee ID (~5% intentionally unmapped)"),
+        ("ext_badge_registry",      f"{BRONZE_SCHEMA}.ext_badge_registry",      "Mapping table — badge ID → employee ID (used by Silver PACS and Geo resolution)"),
+        ("ext_asset_assignment",    f"{BRONZE_SCHEMA}.ext_asset_assignment",    "Mapping table — machine ID → employee ID with effective start/end dates"),
+        ("ext_directory",           f"{BRONZE_SCHEMA}.ext_directory",           "Mapping table — email address and Slack handle → employee ID"),
+        ("ext_social_handle_map",   f"{BRONZE_SCHEMA}.ext_social_handle_map",   "Mapping table — social media handle → employee ID (~5% intentionally unmapped)"),
     ]
     unions = "\n    UNION ALL\n    ".join(
         f"SELECT '{name}' AS source_name, '{desc}' AS description, COUNT(*)::INT AS record_count FROM {table}"
