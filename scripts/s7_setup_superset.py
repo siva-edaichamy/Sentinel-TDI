@@ -340,16 +340,15 @@ def _chart_specs(datasets: dict[str, int]) -> list[dict]:
         # ── Row 2: Gold anomaly distribution ───────────────────────────────
         {
             "slice_name": "Anomaly Tier Distribution",
-            "viz_type":   "echarts_pie",
+            "viz_type":   "pie",
             "datasource_id": latest_ds,
             "params": json.dumps({
-                **_base_params("echarts_pie", latest_ds),
+                **_base_params("pie", latest_ds),
                 "groupby": ["anomaly_tier"],
                 "metric": m_emp_count,
-                "innerRadius": 30,
-                "outerRadius": 70,
-                "labelsOutside": True,
+                "labels_outside": True,
                 "show_legend": True,
+                "donut": False,
             }),
             "query_context": _query_context(latest_ds, [m_emp_count],
                                             groupby=["anomaly_tier"]),
@@ -383,19 +382,18 @@ def _chart_specs(datasets: dict[str, int]) -> list[dict]:
         # ── Row 3: Silver identity resolution ──────────────────────────────
         {
             "slice_name": "Silver Identity Resolution by Domain",
-            "viz_type":   "echarts_bar",
+            "viz_type":   "dist_bar",
             "datasource_id": silver_ds,
             "params": json.dumps({
-                **_base_params("echarts_bar", silver_ds),
-                "x_axis": "domain",
-                "groupby": ["identity_resolution_status"],
+                **_base_params("dist_bar", silver_ds),
+                "columns": ["identity_resolution_status"],
+                "groupby": ["domain"],
                 "metrics": [m_records],
-                "stack": True,
+                "bar_stacked": True,
                 "show_legend": True,
-                "show_value": True,
-                "orientation": "vertical",
-                "x_axis_title": "Source Domain",
-                "y_axis_title": "Record Count",
+                "show_bar_value": True,
+                "x_axis_label": "Source Domain",
+                "y_axis_label": "Record Count",
             }),
             "query_context": _query_context(
                 silver_ds, [m_records],
