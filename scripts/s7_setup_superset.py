@@ -197,60 +197,60 @@ def setup_database(client: SupersetClient) -> int:
 def _bronze_sql() -> str:
     # (priority, display_name, gp_table, description)
     rows = [
-        # ── Core enterprise behavioral signals ──────────────────────────────────
+        # ── Enterprise behavioral signals ────────────────────────────────────────
         ( 1, "HR Master",
           f"{BRONZE_SCHEMA}.ext_hris_events",
-          "1. HR Master — Identity anchor. Who the person is, their role, clearance level, and current employment status. Every other signal is interpreted in this context."),
+          "Identity anchor — who the person is, their role, clearance level, and current employment status. Every other signal is interpreted against this record."),
         ( 2, "Data Activity",
           f"{BRONZE_SCHEMA}.ext_dlp_events",
-          "2. Data Activity — Closest signal to actual harm. File exfiltration, USB writes, and cloud uploads of sensitive documents. This is where the damage happens."),
+          "Closest signal to actual harm — file exfiltration, USB writes, and cloud uploads of sensitive documents. This is where the damage happens."),
         ( 3, "System Activity",
           f"{BRONZE_SCHEMA}.ext_network_events",
-          "3. System Activity — Precursor to data activity. VPN anomalies, suspicious external domains, and after-hours sessions — the digital setup before an exfiltration event."),
+          "Precursor to data activity — VPN anomalies, suspicious external domains, and after-hours sessions. The digital setup that typically precedes an exfiltration event."),
         ( 4, "Communications",
           f"{BRONZE_SCHEMA}.ext_comms_events",
-          "4. Communications — Intent signal. External recipient spikes, large attachments to personal email, and messaging volume shifts — often correlated same-day with data activity."),
+          "Intent signal — external recipient spikes, large attachments to personal email, and messaging volume shifts. Often correlated same-day with data activity."),
         ( 5, "Building Access",
           f"{BRONZE_SCHEMA}.ext_pacs_events",
-          "5. Building Access — Physical behavioral pattern. After-hours server room access and sensitive area visits. Strong corroborating signal, rarely stands alone."),
+          "Physical behavioral pattern — after-hours server room access and sensitive area visits. Strong corroborating signal that rarely stands alone."),
         ( 6, "Security Clearance",
           f"{BRONZE_SCHEMA}.ext_adjudication_events",
-          "6. Security Clearance — Formal risk indicator. Active reinvestigations, status suspensions, and clearance changes — the organization's own adjudication system flagging elevated concern."),
-        # ── OSINT signals ───────────────────────────────────────────────────────
+          "Formal risk indicator — active reinvestigations, status suspensions, and clearance changes. The organization's own adjudication process flagging elevated concern."),
+        # ── External intelligence signals ────────────────────────────────────────
         ( 7, "Dark Web Alerts",
           f"{BRONZE_SCHEMA}.ext_raw_darkweb_signals",
-          "7. Dark Web — Confirmation signal. Employee credentials or internal references found in breach databases — direct evidence that information has already left the organization."),
+          "Risk amplifier and confirmation signal — employee credentials found in breach databases. Raises the severity of any correlated internal behavior and may indicate unauthorized access using stolen credentials."),
         ( 8, "Financial Stress",
           f"{BRONZE_SCHEMA}.ext_raw_financial_stress",
-          "8. Financial Stress — Motive signal. Court filings, liens, and judgments from public records — the why behind the behavior. Leads all other signals by 2-4 weeks in real cases."),
+          "Motive signal — court filings, liens, and judgments from public records. The why behind the behavior. Typically surfaces 2 to 4 weeks ahead of internal behavioral changes."),
         ( 9, "Lifestyle Incongruity",
           f"{BRONZE_SCHEMA}.ext_raw_lifestyle_signals",
-          "9. Lifestyle Incongruity — Motive signal. Unexplained wealth relative to salary level — the other side of the financial coin. Tends to appear before financial stress signals."),
+          "Motive signal — spending patterns and lifestyle indicators inconsistent with known salary level. Often surfaces earlier than financial stress records in the public domain."),
         (10, "Social Sentiment",
           f"{BRONZE_SCHEMA}.ext_pai_events",
-          "10. Social Sentiment — Behavioral drift. Declining mood scores and emotional keyword flags from public posts — confirms stress building but rarely actionable on its own."),
-        (11, "Twitter / X Raw Feed",
+          "Behavioral drift — declining mood scores and emotional keyword flags from public social activity. Confirms stress is building but rarely actionable without corroborating signals."),
+        (11, "Twitter / X Activity",
           f"{BRONZE_SCHEMA}.ext_raw_tweets",
-          "11. Twitter / X — Raw social feed that drives the sentiment analysis above. Individual posts, retweet patterns, and engagement signals from monitored accounts."),
-        (12, "Internal Location Data",
+          "Raw social feed powering the sentiment analysis — individual posts, retweet patterns, and engagement signals from monitored accounts."),
+        (12, "Campus Location Data",
           f"{BRONZE_SCHEMA}.ext_geo_events",
-          "12. Internal Location — Corroborating physical signal. Device detection in restricted campus zones. Most useful for timeline reconstruction after an event, not early detection."),
-        (13, "Instagram Check-ins",
+          "Corroborating physical signal — device detection in restricted zones and campus areas. Most valuable for timeline reconstruction after an event rather than early detection."),
+        (13, "Public Location Activity",
           f"{BRONZE_SCHEMA}.ext_raw_instagram_posts",
-          "13. Instagram / Location OSINT — Weakest standalone signal. Sensitive location visits from public posts are interesting for corroboration but highly ambiguous without other evidence."),
-        # ── Identity registers (required for linking signals to people) ──────────
+          "External location signal — public check-ins and location posts from monitored social accounts. Useful for corroboration but requires supporting evidence from other streams."),
+        # ── Identity registers ────────────────────────────────────────────────────
         (14, "Door & Badge Register",
           f"{BRONZE_SCHEMA}.ext_badge_registry",
-          "Door & Badge Register — Links every physical access badge to the employee it belongs to. Required to connect building entry events to a person's HR record."),
+          "Links every physical access badge to the employee it belongs to. Connects building entry events to an individual's HR record."),
         (15, "Workstation Register",
           f"{BRONZE_SCHEMA}.ext_asset_assignment",
-          "Workstation Register — Tracks which employee uses which computer and when assignments changed. Required to attribute file and network activity to the responsible individual."),
+          "Tracks which employee uses which computer and when assignments changed. Attributes file and network activity to the responsible individual."),
         (16, "Corporate Directory",
           f"{BRONZE_SCHEMA}.ext_directory",
-          "Corporate Directory — Maps employee email addresses and messaging handles to their HR profile. Required to link email and Slack activity to a known employee."),
+          "Maps employee email addresses and messaging handles to their HR profile. Connects email and Slack activity to a known employee."),
         (17, "Social Media Identity Register",
           f"{BRONZE_SCHEMA}.ext_social_handle_map",
-          "Social Media Identity Register — Links public social media accounts to employee HR records. Required to connect OSINT signals to a known person in the organization."),
+          "Links public social media accounts to employee HR records. Connects external social and OSINT signals to a known person in the organization."),
     ]
     unions = "\n    UNION ALL\n    ".join(
         f"SELECT {priority} AS priority, '{name}' AS source_name, '{desc}' AS description, COUNT(*)::INT AS record_count FROM {table}"
@@ -260,50 +260,98 @@ def _bronze_sql() -> str:
 
 
 def _silver_sql() -> str:
+    # (priority, display_name, gp_table, description)
     rows = [
-        # Internal Silver domains
-        ("sv_hris",              f"{SILVER_SCHEMA}.sv_hris",              "Employee master — every employee's full HR profile: department, role, clearance, and employment dates"),
-        ("sv_pacs",              f"{SILVER_SCHEMA}.sv_pacs",              "Access events — each badge swipe linked to the employee, with after-hours and weekend flags"),
-        ("sv_network",           f"{SILVER_SCHEMA}.sv_network",           "Network sessions — all computer and VPN activity linked to the employee who used it"),
-        ("sv_dlp",               f"{SILVER_SCHEMA}.sv_dlp",               "File activity — USB copies, cloud uploads, and print events linked to the responsible employee"),
-        ("sv_comms",             f"{SILVER_SCHEMA}.sv_comms",             "Messages — email and Slack events linked to each employee, with external contact and attachment flags"),
-        ("sv_pai",               f"{SILVER_SCHEMA}.sv_pai",               "Social sentiment — daily mood scores and emotional tags from public social accounts, linked to employees"),
-        ("sv_geo",               f"{SILVER_SCHEMA}.sv_geo",               "Location records — device positions on campus linked to each employee by badge"),
-        ("sv_adjudication",      f"{SILVER_SCHEMA}.sv_adjudication",      "Clearance history — security status events and reinvestigation flags linked to each employee"),
-        ("sv_unresolved_events", f"{SILVER_SCHEMA}.sv_unresolved_events", "Unmatched records — events that could not be linked to a known employee (audit trail)"),
-        # OSINT Silver domains
-        ("silver_geo_anomalies",        f"{SILVER_SCHEMA}.silver_geo_anomalies",        "Location anomalies — Instagram check-ins flagged as sensitive sites or unusual travel patterns"),
-        ("silver_lifestyle_incongruity", f"{SILVER_SCHEMA}.silver_lifestyle_incongruity", "Lifestyle flags — purchases or activities inconsistent with the employee's compensation level"),
-        ("silver_financial_stress",      f"{SILVER_SCHEMA}.silver_financial_stress",      "Financial stress records — public court filings, liens, and eviction notices linked to employees"),
-        ("silver_darkweb_signals",       f"{SILVER_SCHEMA}.silver_darkweb_signals",       "Dark web matches — employee email or social credentials detected in breach data sources"),
+        # ── Enterprise behavioral records ─────────────────────────────────────────
+        ( 1, "Employee Records",
+          f"{SILVER_SCHEMA}.sv_hris",
+          "Every employee's full profile — department, job title, clearance level, and employment dates. The authoritative identity record that all other tables link back to."),
+        ( 2, "Data Activity Events",
+          f"{SILVER_SCHEMA}.sv_dlp",
+          "File movement events resolved to the responsible employee — USB transfers, cloud uploads, print jobs, and document copies with file size and destination."),
+        ( 3, "System Activity Events",
+          f"{SILVER_SCHEMA}.sv_network",
+          "Network and computer sessions resolved to the employee — VPN logins, external site visits, data volumes transferred, and after-hours session flags."),
+        ( 4, "Communications Events",
+          f"{SILVER_SCHEMA}.sv_comms",
+          "Email and messaging records resolved to the employee — external contact flags, attachment sizes, and volume changes over time."),
+        ( 5, "Building Access Events",
+          f"{SILVER_SCHEMA}.sv_pacs",
+          "Badge entry and exit events resolved to the employee — door location, time of day, and after-hours and weekend flags."),
+        ( 6, "Security Clearance Events",
+          f"{SILVER_SCHEMA}.sv_adjudication",
+          "Clearance status history resolved to the employee — active investigations, reinvestigation deadlines, and status change events."),
+        ( 7, "Dark Web Detections",
+          f"{SILVER_SCHEMA}.silver_darkweb_signals",
+          "Breach database matches resolved to the employee — credential type, source, severity level, and confidence score for each detection."),
+        ( 8, "Financial Stress Records",
+          f"{SILVER_SCHEMA}.silver_financial_stress",
+          "Public financial distress records linked to the employee by name — court filings, liens, and judgments with stress severity scores."),
+        ( 9, "Lifestyle Risk Signals",
+          f"{SILVER_SCHEMA}.silver_lifestyle_incongruity",
+          "Public spending and lifestyle events linked to the employee — estimated value, salary band comparison, and an incongruity score relative to compensation."),
+        (10, "Social Sentiment",
+          f"{SILVER_SCHEMA}.sv_pai",
+          "Daily mood and engagement signals from public social accounts linked to the employee — sentiment score, post frequency, and emotional keyword tags."),
+        (11, "Campus Location Events",
+          f"{SILVER_SCHEMA}.sv_geo",
+          "Device position records on campus resolved to the employee — building zone, coordinates, and device type."),
+        (12, "Location Anomalies",
+          f"{SILVER_SCHEMA}.silver_geo_anomalies",
+          "Public location check-ins linked to the employee — classified by location sensitivity with anomaly and incongruity flags."),
+        (13, "Unlinked Event Log",
+          f"{SILVER_SCHEMA}.sv_unresolved_events",
+          "Events from all sources that could not be linked to a known employee — retained for audit and coverage reporting."),
     ]
     unions = "\n    UNION ALL\n    ".join(
-        f"SELECT '{name}' AS table_name, '{desc}' AS description, COUNT(*)::INT AS record_count FROM {table}"
-        for name, table, desc in rows
+        f"SELECT {priority} AS priority, '{name}' AS table_name, '{desc}' AS description, COUNT(*)::INT AS record_count FROM {table}"
+        for priority, name, table, desc in rows
     )
-    return f"SELECT table_name, description, record_count FROM (\n    {unions}\n) t ORDER BY table_name"
+    return f"SELECT table_name, description, record_count FROM (\n    {unions}\n) t ORDER BY priority"
 
 
 def _gold_sql() -> str:
+    # (priority, display_name, gp_table, description)
     rows = [
-        # Internal behavioral scoring
-        ("employee_risk_features", f"{GOLD_SCHEMA}.employee_risk_features", "Behavioral risk scores — 7-day rolling anomaly score, risk tier (HIGH/MEDIUM/LOW), and 13 derived signals per employee per week"),
-        ("employee_features",      f"{GOLD_SCHEMA}.employee_features",      "ML input — normalized numerical feature vectors used as input to the clustering algorithm"),
-        ("gd_kmeans_output",       f"{GOLD_SCHEMA}.gd_kmeans_output",       "Peer-group model — 5 behavioral peer clusters learned from the full employee population by the ML engine"),
-        ("gd_scored",              f"{GOLD_SCHEMA}.gd_scored",              "Cluster assignments — each employee's distance from their peer group (the raw anomaly signal before scoring)"),
-        # OSINT Gold weekly risk streams
-        ("gold_twitter_risk",          f"{GOLD_SCHEMA}.gold_twitter_risk",          "Twitter risk — weekly sentiment trend and emotional signal risk score per employee"),
-        ("gold_location_risk",         f"{GOLD_SCHEMA}.gold_location_risk",         "Location risk — weekly count of sensitive location visits and travel anomaly score per employee"),
-        ("gold_lifestyle_risk",        f"{GOLD_SCHEMA}.gold_lifestyle_risk",         "Lifestyle risk — weekly unexplained spending and luxury activity risk score per employee"),
-        ("gold_financial_stress_risk", f"{GOLD_SCHEMA}.gold_financial_stress_risk", "Financial stress risk — weekly public filing count and cumulative financial pressure score per employee"),
-        ("gold_darkweb_risk",          f"{GOLD_SCHEMA}.gold_darkweb_risk",          "Dark web risk — weekly breach detection count and severity-weighted risk score per employee"),
-        ("gold_composite_risk",        f"{GOLD_SCHEMA}.gold_composite_risk",         "Composite risk — final fused score across all 6 behavioral streams with risk tier (LOW/MEDIUM/HIGH/CRITICAL) and recommended action"),
+        # ── Composite output — the primary analyst view ───────────────────────────
+        ( 1, "Composite Risk Score",
+          f"{GOLD_SCHEMA}.gold_composite_risk",
+          "Weekly fused risk score per employee combining all six behavioral streams. Includes risk tier (Low / Medium / High / Critical), primary signal driver, and recommended action."),
+        # ── Individual stream scores ──────────────────────────────────────────────
+        ( 2, "Behavioral Risk Profile",
+          f"{GOLD_SCHEMA}.employee_risk_features",
+          "Weekly internal behavioral risk score per employee — derived from 13 signals across building access, system activity, data movement, communications, location, sentiment, and clearance status."),
+        ( 3, "Financial Stress Risk",
+          f"{GOLD_SCHEMA}.gold_financial_stress_risk",
+          "Weekly financial risk score per employee — based on active public records count and cumulative stress score from court filings, liens, and judgments."),
+        ( 4, "Dark Web Risk",
+          f"{GOLD_SCHEMA}.gold_darkweb_risk",
+          "Weekly dark web risk score per employee — based on breach detection count and maximum severity across detections in the period."),
+        ( 5, "Lifestyle Risk",
+          f"{GOLD_SCHEMA}.gold_lifestyle_risk",
+          "Weekly lifestyle incongruity risk score per employee — based on unexplained spending event count, maximum incongruity score, and cumulative 30-day spend."),
+        ( 6, "Social Sentiment Risk",
+          f"{GOLD_SCHEMA}.gold_twitter_risk",
+          "Weekly sentiment risk score per employee — based on the gap between current mood and the employee's personal 30-day baseline, with primary emotional signal flagged."),
+        ( 7, "Location Risk",
+          f"{GOLD_SCHEMA}.gold_location_risk",
+          "Weekly location risk score per employee — based on sensitive location visit count and work-hours absence patterns from public check-in data."),
+        # ── Scoring model internals ───────────────────────────────────────────────
+        ( 8, "Peer Group Model",
+          f"{GOLD_SCHEMA}.gd_kmeans_output",
+          "The behavioral peer group model — five clusters representing distinct behavioral profiles learned from the full employee population. Each employee is assigned to the closest matching group."),
+        ( 9, "Individual Score Results",
+          f"{GOLD_SCHEMA}.gd_scored",
+          "Per-employee, per-week distance from assigned peer group — the raw anomaly signal before normalization and tier assignment."),
+        (10, "Scoring Input Vectors",
+          f"{GOLD_SCHEMA}.employee_features",
+          "Normalized behavioral feature vectors used as input to the peer group scoring model — one row per employee per week."),
     ]
     unions = "\n    UNION ALL\n    ".join(
-        f"SELECT '{name}' AS table_name, '{desc}' AS description, COUNT(*)::INT AS record_count FROM {table}"
-        for name, table, desc in rows
+        f"SELECT {priority} AS priority, '{name}' AS table_name, '{desc}' AS description, COUNT(*)::INT AS record_count FROM {table}"
+        for priority, name, table, desc in rows
     )
-    return f"SELECT table_name, description, record_count FROM (\n    {unions}\n) t ORDER BY table_name"
+    return f"SELECT table_name, description, record_count FROM (\n    {unions}\n) t ORDER BY priority"
 
 
 def setup_datasets(client: SupersetClient, db_id: int) -> dict[str, int]:
