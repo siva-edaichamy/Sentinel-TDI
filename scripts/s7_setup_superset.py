@@ -195,33 +195,68 @@ def setup_database(client: SupersetClient) -> int:
 # ---------------------------------------------------------------------------
 
 def _bronze_sql() -> str:
+    # (priority, display_name, gp_table, description)
     rows = [
-        # Internal enterprise sources
-        ("ext_hris_events",         f"{BRONZE_SCHEMA}.ext_hris_events",         "1. HR records — employee names, job titles, departments, hire/termination dates, and security clearance levels"),
-        ("ext_pacs_events",         f"{BRONZE_SCHEMA}.ext_pacs_events",         "2. Building access — when each employee entered or exited each door, including early morning and late night visits"),
-        ("ext_network_events",      f"{BRONZE_SCHEMA}.ext_network_events",      "3. Computer activity — VPN logins, websites visited, data downloaded, and remote access sessions"),
-        ("ext_dlp_events",          f"{BRONZE_SCHEMA}.ext_dlp_events",          "4. File movement — documents copied to USB drives, uploaded to cloud services, or sent to printers"),
-        ("ext_comms_events",        f"{BRONZE_SCHEMA}.ext_comms_events",        "5. Messaging activity — email and Slack volume, how many outside recipients got messages, and large attachment flags"),
-        ("ext_pai_events",          f"{BRONZE_SCHEMA}.ext_pai_events",          "6. Social media — public post frequency and mood scores from monitored social accounts"),
-        ("ext_geo_events",          f"{BRONZE_SCHEMA}.ext_geo_events",          "7. Location data — employee device positions within buildings and campus with timestamps"),
-        ("ext_adjudication_events", f"{BRONZE_SCHEMA}.ext_adjudication_events", "8. Security clearance — clearance status, periodic review flags, and any reinvestigation activity"),
-        # Identity directories
-        ("ext_badge_registry",      f"{BRONZE_SCHEMA}.ext_badge_registry",      "Badge directory — links each physical access badge to the employee it belongs to"),
-        ("ext_asset_assignment",    f"{BRONZE_SCHEMA}.ext_asset_assignment",    "Computer directory — tracks which employee uses which computer and when assignments changed"),
-        ("ext_directory",           f"{BRONZE_SCHEMA}.ext_directory",           "Contact directory — maps employee email addresses and messaging handles to their HR record"),
-        ("ext_social_handle_map",   f"{BRONZE_SCHEMA}.ext_social_handle_map",   "Social identity — links public social media accounts to employee HR records"),
-        # OSINT external feeds (5 streams)
-        ("ext_raw_tweets",          f"{BRONZE_SCHEMA}.ext_raw_tweets",          "Twitter/X — public posts from monitored social accounts, including text, sentiment, and engagement"),
-        ("ext_raw_instagram_posts", f"{BRONZE_SCHEMA}.ext_raw_instagram_posts", "Instagram — public posts and location check-ins from monitored social accounts"),
-        ("ext_raw_lifestyle_signals",f"{BRONZE_SCHEMA}.ext_raw_lifestyle_signals","Lifestyle signals — public purchases, luxury events, and spending patterns from social and public records"),
-        ("ext_raw_financial_stress", f"{BRONZE_SCHEMA}.ext_raw_financial_stress", "Financial stress — public court filings, liens, and judgments matched to employee records by name"),
-        ("ext_raw_darkweb_signals",  f"{BRONZE_SCHEMA}.ext_raw_darkweb_signals",  "Dark web alerts — employee credentials and personal information detected in breach databases"),
+        # ── Core enterprise behavioral signals ──────────────────────────────────
+        ( 1, "HR Master",
+          f"{BRONZE_SCHEMA}.ext_hris_events",
+          "1. HR Master — Identity anchor. Who the person is, their role, clearance level, and current employment status. Every other signal is interpreted in this context."),
+        ( 2, "Data Activity",
+          f"{BRONZE_SCHEMA}.ext_dlp_events",
+          "2. Data Activity — Closest signal to actual harm. File exfiltration, USB writes, and cloud uploads of sensitive documents. This is where the damage happens."),
+        ( 3, "System Activity",
+          f"{BRONZE_SCHEMA}.ext_network_events",
+          "3. System Activity — Precursor to data activity. VPN anomalies, suspicious external domains, and after-hours sessions — the digital setup before an exfiltration event."),
+        ( 4, "Communications",
+          f"{BRONZE_SCHEMA}.ext_comms_events",
+          "4. Communications — Intent signal. External recipient spikes, large attachments to personal email, and messaging volume shifts — often correlated same-day with data activity."),
+        ( 5, "Building Access",
+          f"{BRONZE_SCHEMA}.ext_pacs_events",
+          "5. Building Access — Physical behavioral pattern. After-hours server room access and sensitive area visits. Strong corroborating signal, rarely stands alone."),
+        ( 6, "Security Clearance",
+          f"{BRONZE_SCHEMA}.ext_adjudication_events",
+          "6. Security Clearance — Formal risk indicator. Active reinvestigations, status suspensions, and clearance changes — the organization's own adjudication system flagging elevated concern."),
+        # ── OSINT signals ───────────────────────────────────────────────────────
+        ( 7, "Dark Web Alerts",
+          f"{BRONZE_SCHEMA}.ext_raw_darkweb_signals",
+          "7. Dark Web — Confirmation signal. Employee credentials or internal references found in breach databases — direct evidence that information has already left the organization."),
+        ( 8, "Financial Stress",
+          f"{BRONZE_SCHEMA}.ext_raw_financial_stress",
+          "8. Financial Stress — Motive signal. Court filings, liens, and judgments from public records — the why behind the behavior. Leads all other signals by 2-4 weeks in real cases."),
+        ( 9, "Lifestyle Incongruity",
+          f"{BRONZE_SCHEMA}.ext_raw_lifestyle_signals",
+          "9. Lifestyle Incongruity — Motive signal. Unexplained wealth relative to salary level — the other side of the financial coin. Tends to appear before financial stress signals."),
+        (10, "Social Sentiment",
+          f"{BRONZE_SCHEMA}.ext_pai_events",
+          "10. Social Sentiment — Behavioral drift. Declining mood scores and emotional keyword flags from public posts — confirms stress building but rarely actionable on its own."),
+        (11, "Twitter / X Raw Feed",
+          f"{BRONZE_SCHEMA}.ext_raw_tweets",
+          "11. Twitter / X — Raw social feed that drives the sentiment analysis above. Individual posts, retweet patterns, and engagement signals from monitored accounts."),
+        (12, "Internal Location Data",
+          f"{BRONZE_SCHEMA}.ext_geo_events",
+          "12. Internal Location — Corroborating physical signal. Device detection in restricted campus zones. Most useful for timeline reconstruction after an event, not early detection."),
+        (13, "Instagram Check-ins",
+          f"{BRONZE_SCHEMA}.ext_raw_instagram_posts",
+          "13. Instagram / Location OSINT — Weakest standalone signal. Sensitive location visits from public posts are interesting for corroboration but highly ambiguous without other evidence."),
+        # ── Identity registers (required for linking signals to people) ──────────
+        (14, "Door & Badge Register",
+          f"{BRONZE_SCHEMA}.ext_badge_registry",
+          "Door & Badge Register — Links every physical access badge to the employee it belongs to. Required to connect building entry events to a person's HR record."),
+        (15, "Workstation Register",
+          f"{BRONZE_SCHEMA}.ext_asset_assignment",
+          "Workstation Register — Tracks which employee uses which computer and when assignments changed. Required to attribute file and network activity to the responsible individual."),
+        (16, "Corporate Directory",
+          f"{BRONZE_SCHEMA}.ext_directory",
+          "Corporate Directory — Maps employee email addresses and messaging handles to their HR profile. Required to link email and Slack activity to a known employee."),
+        (17, "Social Media Identity Register",
+          f"{BRONZE_SCHEMA}.ext_social_handle_map",
+          "Social Media Identity Register — Links public social media accounts to employee HR records. Required to connect OSINT signals to a known person in the organization."),
     ]
     unions = "\n    UNION ALL\n    ".join(
-        f"SELECT '{name}' AS source_name, '{desc}' AS description, COUNT(*)::INT AS record_count FROM {table}"
-        for name, table, desc in rows
+        f"SELECT {priority} AS priority, '{name}' AS source_name, '{desc}' AS description, COUNT(*)::INT AS record_count FROM {table}"
+        for priority, name, table, desc in rows
     )
-    return f"SELECT source_name, description, record_count FROM (\n    {unions}\n) t ORDER BY source_name"
+    return f"SELECT source_name, description, record_count FROM (\n    {unions}\n) t ORDER BY priority"
 
 
 def _silver_sql() -> str:
