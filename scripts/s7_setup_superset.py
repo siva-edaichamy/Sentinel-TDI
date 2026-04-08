@@ -231,7 +231,22 @@ def _get_or_create_virtual_dataset(
 # ---------------------------------------------------------------------------
 
 def _metric(sql: str, label: str) -> dict:
-    return {"expressionType": "SQL", "sqlExpression": sql, "label": label}
+    return {
+        "expressionType": "SQL",
+        "sqlExpression": sql,
+        "label": label,
+        "hasCustomLabel": True,
+    }
+
+
+def _base_params(viz_type: str, ds_id: int, ds_type: str = "table") -> dict:
+    """Common params that every chart needs in Superset 3.x."""
+    return {
+        "viz_type": viz_type,
+        "datasource": f"{ds_id}__{ds_type}",
+        "adhoc_filters": [],
+        "time_range": "No filter",
+    }
 
 
 def _chart_specs(datasets: dict[str, int]) -> list[dict]:
@@ -247,8 +262,8 @@ def _chart_specs(datasets: dict[str, int]) -> list[dict]:
             "viz_type":   "big_number_total",
             "datasource_id": gold_ds,
             "params": json.dumps({
-                "viz_type": "big_number_total",
-                "metric": _metric("COUNT(DISTINCT employee_id)", "Employees"),
+                **_base_params("big_number_total", gold_ds),
+                "metric": _metric("COUNT(DISTINCT employee_id)", "Employees Scored"),
                 "subheader": "total employees with anomaly scores",
                 "y_axis_format": "SMART_NUMBER",
             }),
@@ -258,7 +273,7 @@ def _chart_specs(datasets: dict[str, int]) -> list[dict]:
             "viz_type":   "big_number_total",
             "datasource_id": gold_ds,
             "params": json.dumps({
-                "viz_type": "big_number_total",
+                **_base_params("big_number_total", gold_ds),
                 "metric": _metric(
                     "COUNT(DISTINCT CASE WHEN anomaly_tier = 'HIGH' THEN employee_id END)",
                     "HIGH Risk",
@@ -272,8 +287,8 @@ def _chart_specs(datasets: dict[str, int]) -> list[dict]:
             "viz_type":   "big_number_total",
             "datasource_id": silver_ds,
             "params": json.dumps({
-                "viz_type": "big_number_total",
-                "metric": _metric("COUNT(DISTINCT domain)", "Domains"),
+                **_base_params("big_number_total", silver_ds),
+                "metric": _metric("COUNT(DISTINCT domain)", "Domains Loaded"),
                 "subheader": "Silver domains with resolved records",
                 "y_axis_format": "SMART_NUMBER",
             }),
@@ -283,7 +298,7 @@ def _chart_specs(datasets: dict[str, int]) -> list[dict]:
             "viz_type":   "big_number_total",
             "datasource_id": runs_ds,
             "params": json.dumps({
-                "viz_type": "big_number_total",
+                **_base_params("big_number_total", runs_ds),
                 "metric": _metric("COUNT(*)", "Stage Runs"),
                 "subheader": "pipeline stage executions logged",
                 "y_axis_format": "SMART_NUMBER",
@@ -296,7 +311,7 @@ def _chart_specs(datasets: dict[str, int]) -> list[dict]:
             "viz_type":   "echarts_pie",
             "datasource_id": latest_ds,
             "params": json.dumps({
-                "viz_type": "echarts_pie",
+                **_base_params("echarts_pie", latest_ds),
                 "groupby": ["anomaly_tier"],
                 "metric": _metric("COUNT(DISTINCT employee_id)", "Employees"),
                 "innerRadius": 30,
@@ -310,7 +325,7 @@ def _chart_specs(datasets: dict[str, int]) -> list[dict]:
             "viz_type":   "table",
             "datasource_id": latest_ds,
             "params": json.dumps({
-                "viz_type": "table",
+                **_base_params("table", latest_ds),
                 "query_mode": "raw",
                 "columns": [
                     "employee_id",
@@ -334,7 +349,7 @@ def _chart_specs(datasets: dict[str, int]) -> list[dict]:
             "viz_type":   "echarts_bar",
             "datasource_id": silver_ds,
             "params": json.dumps({
-                "viz_type": "echarts_bar",
+                **_base_params("echarts_bar", silver_ds),
                 "x_axis": "domain",
                 "groupby": ["identity_resolution_status"],
                 "metrics": [_metric("SUM(row_count)", "Records")],
@@ -353,7 +368,7 @@ def _chart_specs(datasets: dict[str, int]) -> list[dict]:
             "viz_type":   "table",
             "datasource_id": runs_ds,
             "params": json.dumps({
-                "viz_type": "table",
+                **_base_params("table", runs_ds),
                 "query_mode": "raw",
                 "columns": [
                     "stage_name",
@@ -374,23 +389,26 @@ def _chart_specs(datasets: dict[str, int]) -> list[dict]:
 
 
 def setup_charts(client: SupersetClient, datasets: dict[str, int]) -> list[int]:
-    """Create all charts in order, return list of chart ids."""
+    """Create or update all charts, return list of chart ids."""
     chart_ids: list[int] = []
     for spec in _chart_specs(datasets):
+        chart_payload = {
+            "slice_name":      spec["slice_name"],
+            "viz_type":        spec["viz_type"],
+            "datasource_id":   spec["datasource_id"],
+            "datasource_type": "table",
+            "params":          spec["params"],
+        }
         existing = client.find_by_name("/api/v1/chart/", "slice_name", spec["slice_name"])
         if existing:
-            logger.info("Chart exists: %s (id=%d)", spec["slice_name"], existing["id"])
-            chart_ids.append(existing["id"])
-            continue
-        result = client.post("/api/v1/chart/", {
-            "slice_name":     spec["slice_name"],
-            "viz_type":       spec["viz_type"],
-            "datasource_id":  spec["datasource_id"],
-            "datasource_type": "table",
-            "params":         spec["params"],
-        })
-        logger.info("Created chart: %s (id=%d)", spec["slice_name"], result["id"])
-        chart_ids.append(result["id"])
+            cid = existing["id"]
+            client.put(f"/api/v1/chart/{cid}", chart_payload)
+            logger.info("Updated chart: %s (id=%d)", spec["slice_name"], cid)
+            chart_ids.append(cid)
+        else:
+            result = client.post("/api/v1/chart/", chart_payload)
+            logger.info("Created chart: %s (id=%d)", spec["slice_name"], result["id"])
+            chart_ids.append(result["id"])
     return chart_ids
 
 
