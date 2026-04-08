@@ -1,11 +1,16 @@
 """
 s7_setup_superset.py — Automated Superset dashboard setup for Sentinel-TDI.
 
-Creates via the Superset REST API (idempotent — safe to re-run):
-  1. Greenplum database connection
-  2. Datasets  — Gold table, Silver resolution summary, pipeline audit
-  3. Charts    — scorecards, pie, bar, tables
-  4. Dashboard — Sentinel TDI: Insider Threat Detection
+Dashboard layout — three catalog tables showing the full data lineage:
+
+  Source (Bronze Layer)
+    List of source files and external tables — description + record count
+
+  EDW (Silver Layer)
+    List of conformed domain tables — description + record count
+
+  Analytics (Gold Layer)
+    List of Gold tables — description + record count
 
 Usage:
     cd scripts
@@ -41,9 +46,9 @@ GP_DB       = os.getenv("GP_DB",       "gpadmin")
 GP_USER     = os.getenv("GP_USER",     "gpadmin")
 GP_PASSWORD = os.getenv("GP_PASSWORD", "")
 
-GOLD_SCHEMA   = "insider_threat_gold"
-SILVER_SCHEMA = "insider_threat_silver"
 BRONZE_SCHEMA = "insider_threat_bronze"
+SILVER_SCHEMA = "insider_threat_silver"
+GOLD_SCHEMA   = "insider_threat_gold"
 
 DB_DISPLAY_NAME = "Sentinel-TDI Greenplum"
 DASHBOARD_TITLE = "Sentinel TDI — Insider Threat Detection"
@@ -96,11 +101,17 @@ class SupersetClient:
 
     def put(self, path: str, payload: dict) -> Any:
         resp = self.session.put(f"{self.base_url}{path}", json=payload)
+        if not resp.ok:
+            logger.error("PUT %s failed %d: %s", path, resp.status_code, resp.text[:400])
         resp.raise_for_status()
         return resp.json()
 
+    def delete(self, path: str) -> None:
+        resp = self.session.delete(f"{self.base_url}{path}")
+        if not resp.ok and resp.status_code != 404:
+            logger.warning("DELETE %s returned %d", path, resp.status_code)
+
     def find_by_name(self, path: str, col: str, value: str) -> dict | None:
-        """Return first resource matching col==value, or None."""
         q = json.dumps({"filters": [{"col": col, "opr": "eq", "value": value}]})
         try:
             data = self.get(path, params={"q": q})
@@ -111,11 +122,53 @@ class SupersetClient:
 
 
 # ---------------------------------------------------------------------------
+# Teardown — remove previous version of this dashboard cleanly
+# ---------------------------------------------------------------------------
+
+_OLD_CHART_NAMES = [
+    "Employees Scored", "HIGH Risk Employees", "Silver Domains Loaded",
+    "Pipeline Stages Run", "Anomaly Tier Distribution",
+    "Top 25 Highest Risk Employees", "Silver Identity Resolution by Domain",
+    "Pipeline Run Audit",
+    # new names
+    "Source — Bronze Layer", "EDW — Silver Layer", "Analytics — Gold Layer",
+]
+
+_OLD_DATASET_NAMES = [
+    "employee_risk_features", "pipeline_runs",
+    "silver_resolution_summary", "gold_latest_window",
+    "bronze_catalog", "silver_catalog", "gold_catalog",
+]
+
+
+def teardown(client: SupersetClient) -> None:
+    """Remove any prior version of this dashboard, its charts, and datasets."""
+    # Dashboard
+    existing = client.find_by_name("/api/v1/dashboard/", "dashboard_title", DASHBOARD_TITLE)
+    if existing:
+        client.delete(f"/api/v1/dashboard/{existing['id']}")
+        logger.info("Deleted dashboard: %s", DASHBOARD_TITLE)
+
+    # Charts
+    for name in _OLD_CHART_NAMES:
+        existing = client.find_by_name("/api/v1/chart/", "slice_name", name)
+        if existing:
+            client.delete(f"/api/v1/chart/{existing['id']}")
+            logger.info("Deleted chart: %s", name)
+
+    # Datasets
+    for name in _OLD_DATASET_NAMES:
+        existing = client.find_by_name("/api/v1/dataset/", "table_name", name)
+        if existing:
+            client.delete(f"/api/v1/dataset/{existing['id']}")
+            logger.info("Deleted dataset: %s", name)
+
+
+# ---------------------------------------------------------------------------
 # 1. Database
 # ---------------------------------------------------------------------------
 
 def setup_database(client: SupersetClient) -> int:
-    """Register Greenplum as a Superset database, return its id."""
     existing = client.find_by_name("/api/v1/database/", "database_name", DB_DISPLAY_NAME)
     if existing:
         logger.info("Database already registered: %s (id=%d)", DB_DISPLAY_NAME, existing["id"])
@@ -131,379 +184,192 @@ def setup_database(client: SupersetClient) -> int:
         "allow_cvas": False,
         "allow_dml": False,
     })
-    db_id = result["id"]
-    logger.info("Created database: %s (id=%d)", DB_DISPLAY_NAME, db_id)
-    return db_id
+    logger.info("Created database: %s (id=%d)", DB_DISPLAY_NAME, result["id"])
+    return result["id"]
 
 
 # ---------------------------------------------------------------------------
-# 2. Datasets
+# 2. Datasets — one virtual SQL dataset per layer
 # ---------------------------------------------------------------------------
 
-_SILVER_RESOLUTION_SQL = """
-SELECT domain, identity_resolution_status, COUNT(*) AS row_count
-FROM (
-    SELECT 'hris'          AS domain, identity_resolution_status FROM insider_threat_silver.sv_hris
-    UNION ALL
-    SELECT 'pacs',         identity_resolution_status FROM insider_threat_silver.sv_pacs
-    UNION ALL
-    SELECT 'network',      identity_resolution_status FROM insider_threat_silver.sv_network
-    UNION ALL
-    SELECT 'dlp',          identity_resolution_status FROM insider_threat_silver.sv_dlp
-    UNION ALL
-    SELECT 'comms',        identity_resolution_status FROM insider_threat_silver.sv_comms
-    UNION ALL
-    SELECT 'pai',          identity_resolution_status FROM insider_threat_silver.sv_pai
-    UNION ALL
-    SELECT 'geo',          identity_resolution_status FROM insider_threat_silver.sv_geo
-    UNION ALL
-    SELECT 'adjudication', identity_resolution_status FROM insider_threat_silver.sv_adjudication
-) all_domains
-GROUP BY domain, identity_resolution_status
-ORDER BY domain
-"""
+def _bronze_sql() -> str:
+    rows = [
+        ("ext_hris_events",         f"{BRONZE_SCHEMA}.ext_hris_events",         "HR employee master — org structure, roles, clearance levels, employment dates"),
+        ("ext_pacs_events",         f"{BRONZE_SCHEMA}.ext_pacs_events",         "Physical access — raw badge swipes with door ID, timestamp, direction (IN/OUT)"),
+        ("ext_network_events",      f"{BRONZE_SCHEMA}.ext_network_events",      "Network activity — VPN logins, DNS queries, proxy logs, session duration"),
+        ("ext_dlp_events",          f"{BRONZE_SCHEMA}.ext_dlp_events",          "Data loss prevention — file moves, USB writes, print and cloud upload events"),
+        ("ext_comms_events",        f"{BRONZE_SCHEMA}.ext_comms_events",        "Communications metadata — email/Slack volume, recipient counts, attachment flags"),
+        ("ext_pai_events",          f"{BRONZE_SCHEMA}.ext_pai_events",          "Public/social media — platform sentiment scores and post frequency"),
+        ("ext_geo_events",          f"{BRONZE_SCHEMA}.ext_geo_events",          "Geospatial — building locations, device timestamps, latitude/longitude"),
+        ("ext_adjudication_events", f"{BRONZE_SCHEMA}.ext_adjudication_events", "Security adjudication — clearance status, reinvestigation flags, status changes"),
+        ("badge_registry",          f"{BRONZE_SCHEMA}.badge_registry",          "Mapping table — badge ID → employee ID (used by Silver PACS and Geo resolution)"),
+        ("asset_assignment",        f"{BRONZE_SCHEMA}.asset_assignment",        "Mapping table — machine ID → employee ID with effective start/end dates"),
+        ("directory",               f"{BRONZE_SCHEMA}.directory",               "Mapping table — email address and Slack handle → employee ID"),
+        ("social_handle_map",       f"{BRONZE_SCHEMA}.social_handle_map",       "Mapping table — social media handle → employee ID (~5% intentionally unmapped)"),
+    ]
+    unions = "\n    UNION ALL\n    ".join(
+        f"SELECT '{name}' AS source_name, '{desc}' AS description, COUNT(*)::INT AS record_count FROM {table}"
+        for name, table, desc in rows
+    )
+    return f"SELECT source_name, description, record_count FROM (\n    {unions}\n) t ORDER BY source_name"
 
-_GOLD_LATEST_SQL = """
-SELECT *
-FROM insider_threat_gold.employee_risk_features
-WHERE window_end_date = (
-    SELECT MAX(window_end_date) FROM insider_threat_gold.employee_risk_features
-)
-ORDER BY anomaly_score DESC
-"""
+
+def _silver_sql() -> str:
+    rows = [
+        ("sv_hris",              f"{SILVER_SCHEMA}.sv_hris",              "HR master — employee identity, org hierarchy, role, clearance level, employment status"),
+        ("sv_pacs",              f"{SILVER_SCHEMA}.sv_pacs",              "Physical access — badge events resolved to employee_id, after-hours and weekend flags"),
+        ("sv_network",           f"{SILVER_SCHEMA}.sv_network",           "Network activity — resolved to employee_id, VPN flag, after-hours flag, bytes transferred"),
+        ("sv_dlp",               f"{SILVER_SCHEMA}.sv_dlp",               "Data loss prevention — resolved to employee_id, USB flag, cloud upload flag, file size"),
+        ("sv_comms",             f"{SILVER_SCHEMA}.sv_comms",             "Communications — resolved to employee_id, external recipient flag, attachment flag"),
+        ("sv_pai",               f"{SILVER_SCHEMA}.sv_pai",               "Social/public data — resolved to employee_id, sentiment score, post and engagement counts"),
+        ("sv_geo",               f"{SILVER_SCHEMA}.sv_geo",               "Geospatial — resolved to employee_id, building code, device type, lat/lon coordinates"),
+        ("sv_adjudication",      f"{SILVER_SCHEMA}.sv_adjudication",      "Adjudication — resolved to employee_id, clearance status, investigation and reinvestigation flags"),
+        ("sv_unresolved_events", f"{SILVER_SCHEMA}.sv_unresolved_events", "Dead letter — records that could not be resolved to an employee_id (lineage audit)"),
+    ]
+    unions = "\n    UNION ALL\n    ".join(
+        f"SELECT '{name}' AS table_name, '{desc}' AS description, COUNT(*)::INT AS record_count FROM {table}"
+        for name, table, desc in rows
+    )
+    return f"SELECT table_name, description, record_count FROM (\n    {unions}\n) t ORDER BY table_name"
+
+
+def _gold_sql() -> str:
+    rows = [
+        ("employee_risk_features", f"{GOLD_SCHEMA}.employee_risk_features", "Final risk scores — 7-day rolling anomaly score, tier (HIGH/MEDIUM/LOW), and all 13 derived behavioral features per employee per window"),
+        ("employee_features",      f"{GOLD_SCHEMA}.employee_features",      "MADlib input — normalized 9-dimension feature vectors per employee per rolling window"),
+        ("gd_kmeans_output",       f"{GOLD_SCHEMA}.gd_kmeans_output",       "MADlib kmeanspp model — k=5 cluster centroids trained on the full feature population"),
+        ("gd_scored",              f"{GOLD_SCHEMA}.gd_scored",              "Cluster assignments — each employee-window assigned to nearest centroid, distance = raw anomaly score"),
+    ]
+    unions = "\n    UNION ALL\n    ".join(
+        f"SELECT '{name}' AS table_name, '{desc}' AS description, COUNT(*)::INT AS record_count FROM {table}"
+        for name, table, desc in rows
+    )
+    return f"SELECT table_name, description, record_count FROM (\n    {unions}\n) t ORDER BY table_name"
 
 
 def setup_datasets(client: SupersetClient, db_id: int) -> dict[str, int]:
-    """Create all datasets, return name → dataset_id mapping."""
-    datasets: dict[str, int] = {}
-
-    # Table-backed datasets
-    for table_name, schema in [
-        ("employee_risk_features", GOLD_SCHEMA),
-        ("pipeline_runs",          BRONZE_SCHEMA),
-    ]:
-        datasets[table_name] = _get_or_create_table_dataset(client, db_id, table_name, schema)
-
-    # Virtual (SQL) datasets
+    datasets = {}
     for name, sql in [
-        ("silver_resolution_summary", _SILVER_RESOLUTION_SQL),
-        ("gold_latest_window",        _GOLD_LATEST_SQL),
+        ("bronze_catalog", _bronze_sql()),
+        ("silver_catalog", _silver_sql()),
+        ("gold_catalog",   _gold_sql()),
     ]:
-        datasets[name] = _get_or_create_virtual_dataset(client, db_id, name, sql)
-
+        result = client.post("/api/v1/dataset/", {
+            "database": db_id,
+            "table_name": name,
+            "sql": sql,
+        })
+        datasets[name] = result["id"]
+        logger.info("Created dataset: %s (id=%d)", name, result["id"])
     return datasets
 
 
-def _get_or_create_table_dataset(
-    client: SupersetClient, db_id: int, table_name: str, schema: str
-) -> int:
-    existing = client.find_by_name("/api/v1/dataset/", "table_name", table_name)
-    if existing:
-        logger.info("Dataset exists: %s (id=%d)", table_name, existing["id"])
-        return existing["id"]
-    result = client.post("/api/v1/dataset/", {
-        "database": db_id,
-        "table_name": table_name,
-        "schema": schema,
-    })
-    logger.info("Created table dataset: %s (id=%d)", table_name, result["id"])
-    return result["id"]
-
-
-def _get_or_create_virtual_dataset(
-    client: SupersetClient, db_id: int, name: str, sql: str
-) -> int:
-    existing = client.find_by_name("/api/v1/dataset/", "table_name", name)
-    if existing:
-        logger.info("Dataset exists: %s (id=%d)", name, existing["id"])
-        return existing["id"]
-    result = client.post("/api/v1/dataset/", {
-        "database": db_id,
-        "table_name": name,
-        "sql": sql,
-    })
-    logger.info("Created virtual dataset: %s (id=%d)", name, result["id"])
-    return result["id"]
-
-
 # ---------------------------------------------------------------------------
-# 3. Charts
+# 3. Charts — one table chart per layer
 # ---------------------------------------------------------------------------
 
-def _metric(sql: str, label: str) -> dict:
-    return {
-        "expressionType": "SQL",
-        "sqlExpression": sql,
-        "label": label,
-        "hasCustomLabel": True,
-    }
-
-
-def _base_params(viz_type: str, ds_id: int, ds_type: str = "table") -> dict:
-    """Common params that every chart needs in Superset 3.x."""
-    return {
-        "viz_type": viz_type,
-        "datasource": f"{ds_id}__{ds_type}",
+def _table_params(ds_id: int, name_col: str) -> tuple[str, str]:
+    """Return (params_json, query_context_json) for a catalog table chart."""
+    params = {
+        "viz_type": "table",
+        "datasource": f"{ds_id}__table",
         "adhoc_filters": [],
         "time_range": "No filter",
+        "query_mode": "raw",
+        "columns": [name_col, "description", "record_count"],
+        "metrics": [],
+        "row_limit": 20,
+        "order_desc": False,
+        "server_pagination": False,
+        "align_pn": False,
+        "color_pn": False,
+        "show_totals": False,
+        "conditional_formatting": [],
     }
-
-
-def _query_context(ds_id: int, metrics: list[dict], columns: list[str] | None = None,
-                   groupby: list[str] | None = None, row_limit: int = 1000,
-                   ds_type: str = "table") -> str:
-    """Build the query_context JSON string Superset 3.x needs to render charts."""
-    query: dict = {
-        "metrics": metrics,
-        "filters": [],
-        "row_limit": row_limit,
-        "orderby": [],
-        "extras": {},
-        "time_range": "No filter",
-        "columns": columns or [],
-        "groupby": groupby or [],
-    }
-    ctx = {
-        "datasource": {"id": ds_id, "type": ds_type},
+    query_context = {
+        "datasource": {"id": ds_id, "type": "table"},
         "force": False,
-        "queries": [query],
+        "queries": [{
+            "metrics": [],
+            "filters": [],
+            "row_limit": 20,
+            "orderby": [],
+            "extras": {},
+            "time_range": "No filter",
+            "columns": [name_col, "description", "record_count"],
+            "groupby": [],
+        }],
         "result_format": "json",
         "result_type": "full",
     }
-    return json.dumps(ctx)
-
-
-def _chart_specs(datasets: dict[str, int]) -> list[dict]:
-    gold_ds   = datasets["employee_risk_features"]
-    latest_ds = datasets["gold_latest_window"]
-    runs_ds   = datasets["pipeline_runs"]
-    silver_ds = datasets["silver_resolution_summary"]
-
-    m_employees   = _metric("COUNT(DISTINCT employee_id)", "Employees Scored")
-    m_high_risk   = _metric("COUNT(DISTINCT CASE WHEN anomaly_tier = 'HIGH' THEN employee_id END)", "HIGH Risk")
-    m_domains     = _metric("COUNT(DISTINCT domain)", "Domains Loaded")
-    m_stage_runs  = _metric("COUNT(*)", "Stage Runs")
-    m_emp_count   = _metric("COUNT(DISTINCT employee_id)", "Employees")
-    m_records     = _metric("SUM(row_count)", "Records")
-
-    return [
-        # ── Row 1: Scorecards ───────────────────────────────────────────────
-        {
-            "slice_name": "Employees Scored",
-            "viz_type":   "big_number_total",
-            "datasource_id": gold_ds,
-            "params": json.dumps({
-                **_base_params("big_number_total", gold_ds),
-                "metric": m_employees,
-                "subheader": "total employees with anomaly scores",
-                "y_axis_format": "SMART_NUMBER",
-            }),
-            "query_context": _query_context(gold_ds, [m_employees], row_limit=1),
-        },
-        {
-            "slice_name": "HIGH Risk Employees",
-            "viz_type":   "big_number_total",
-            "datasource_id": gold_ds,
-            "params": json.dumps({
-                **_base_params("big_number_total", gold_ds),
-                "metric": m_high_risk,
-                "subheader": "anomaly tier HIGH — top 5% by score",
-                "y_axis_format": "SMART_NUMBER",
-            }),
-            "query_context": _query_context(gold_ds, [m_high_risk], row_limit=1),
-        },
-        {
-            "slice_name": "Silver Domains Loaded",
-            "viz_type":   "big_number_total",
-            "datasource_id": silver_ds,
-            "params": json.dumps({
-                **_base_params("big_number_total", silver_ds),
-                "metric": m_domains,
-                "subheader": "Silver domains with resolved records",
-                "y_axis_format": "SMART_NUMBER",
-            }),
-            "query_context": _query_context(silver_ds, [m_domains], row_limit=1),
-        },
-        {
-            "slice_name": "Pipeline Stages Run",
-            "viz_type":   "big_number_total",
-            "datasource_id": runs_ds,
-            "params": json.dumps({
-                **_base_params("big_number_total", runs_ds),
-                "metric": m_stage_runs,
-                "subheader": "pipeline stage executions logged",
-                "y_axis_format": "SMART_NUMBER",
-            }),
-            "query_context": _query_context(runs_ds, [m_stage_runs], row_limit=1),
-        },
-
-        # ── Row 2: Gold anomaly distribution ───────────────────────────────
-        {
-            # echarts_pie requires the echarts plugin bundle — falls back to table
-            # if the plugin is not registered in this Superset build.
-            "slice_name": "Anomaly Tier Distribution",
-            "viz_type":   "table",
-            "datasource_id": latest_ds,
-            "params": json.dumps({
-                **_base_params("table", latest_ds),
-                "query_mode": "aggregate",
-                "groupby": ["anomaly_tier"],
-                "metrics": [m_emp_count],
-                "row_limit": 10,
-                "order_desc": True,
-                "server_pagination": False,
-            }),
-            "query_context": _query_context(latest_ds, [m_emp_count],
-                                            groupby=["anomaly_tier"]),
-        },
-        {
-            "slice_name": "Top 25 Highest Risk Employees",
-            "viz_type":   "table",
-            "datasource_id": latest_ds,
-            "params": json.dumps({
-                **_base_params("table", latest_ds),
-                "query_mode": "raw",
-                "columns": [
-                    "employee_id", "anomaly_tier", "anomaly_score",
-                    "anomaly_percentile", "cross_domain_anomaly_count",
-                    "cluster_id", "window_end_date",
-                ],
-                "metrics": [],
-                "row_limit": 25,
-                "order_desc": True,
-                "server_pagination": False,
-            }),
-            "query_context": _query_context(
-                latest_ds, [],
-                columns=["employee_id", "anomaly_tier", "anomaly_score",
-                         "anomaly_percentile", "cross_domain_anomaly_count",
-                         "cluster_id", "window_end_date"],
-                row_limit=25,
-            ),
-        },
-
-        # ── Row 3: Silver identity resolution ──────────────────────────────
-        {
-            # echarts_bar requires the echarts plugin bundle — falls back to table
-            # if the plugin is not registered in this Superset build.
-            "slice_name": "Silver Identity Resolution by Domain",
-            "viz_type":   "table",
-            "datasource_id": silver_ds,
-            "params": json.dumps({
-                **_base_params("table", silver_ds),
-                "query_mode": "aggregate",
-                "groupby": ["domain", "identity_resolution_status"],
-                "metrics": [m_records],
-                "row_limit": 50,
-                "order_desc": False,
-                "server_pagination": False,
-            }),
-            "query_context": _query_context(
-                silver_ds, [m_records],
-                groupby=["domain", "identity_resolution_status"],
-            ),
-        },
-
-        # ── Row 4: Pipeline lineage audit ──────────────────────────────────
-        {
-            "slice_name": "Pipeline Run Audit",
-            "viz_type":   "table",
-            "datasource_id": runs_ds,
-            "params": json.dumps({
-                **_base_params("table", runs_ds),
-                "query_mode": "raw",
-                "columns": [
-                    "stage_name", "status", "rows_in", "rows_out",
-                    "duration_seconds", "started_at", "completed_at",
-                ],
-                "metrics": [],
-                "row_limit": 50,
-                "order_desc": True,
-                "server_pagination": False,
-            }),
-            "query_context": _query_context(
-                runs_ds, [],
-                columns=["stage_name", "status", "rows_in", "rows_out",
-                         "duration_seconds", "started_at", "completed_at"],
-                row_limit=50,
-            ),
-        },
-    ]
+    return json.dumps(params), json.dumps(query_context)
 
 
 def setup_charts(client: SupersetClient, datasets: dict[str, int]) -> list[int]:
-    """Create or update all charts, return list of chart ids."""
+    specs = [
+        {
+            "slice_name": "Source — Bronze Layer",
+            "ds_name": "bronze_catalog",
+            "name_col": "source_name",
+        },
+        {
+            "slice_name": "EDW — Silver Layer",
+            "ds_name": "silver_catalog",
+            "name_col": "table_name",
+        },
+        {
+            "slice_name": "Analytics — Gold Layer",
+            "ds_name": "gold_catalog",
+            "name_col": "table_name",
+        },
+    ]
+
     chart_ids: list[int] = []
-    for spec in _chart_specs(datasets):
-        chart_payload = {
+    for spec in specs:
+        ds_id = datasets[spec["ds_name"]]
+        params, query_context = _table_params(ds_id, spec["name_col"])
+        result = client.post("/api/v1/chart/", {
             "slice_name":      spec["slice_name"],
-            "viz_type":        spec["viz_type"],
-            "datasource_id":   spec["datasource_id"],
+            "viz_type":        "table",
+            "datasource_id":   ds_id,
             "datasource_type": "table",
-            "params":          spec["params"],
-            "query_context":   spec["query_context"],
-        }
-        existing = client.find_by_name("/api/v1/chart/", "slice_name", spec["slice_name"])
-        if existing:
-            cid = existing["id"]
-            client.put(f"/api/v1/chart/{cid}", chart_payload)
-            logger.info("Updated chart: %s (id=%d)", spec["slice_name"], cid)
-            chart_ids.append(cid)
-        else:
-            result = client.post("/api/v1/chart/", chart_payload)
-            logger.info("Created chart: %s (id=%d)", spec["slice_name"], result["id"])
-            chart_ids.append(result["id"])
+            "params":          params,
+            "query_context":   query_context,
+        })
+        chart_ids.append(result["id"])
+        logger.info("Created chart: %s (id=%d)", spec["slice_name"], result["id"])
+
     return chart_ids
 
 
 # ---------------------------------------------------------------------------
-# 4. Dashboard layout
+# 4. Dashboard
 # ---------------------------------------------------------------------------
 
 def _build_position_json(chart_ids: list[int]) -> str:
-    """
-    Build Superset dashboard position_json.
-    Grid is 24 columns wide. Heights are in units (~10px each).
-
-    Row 1 — 4 scorecards          (width=6, height=18 each)
-    Row 2 — pie + top-25 table    (width=8 + 16, height=40)
-    Row 3 — resolution bar chart  (width=24, height=36)
-    Row 4 — pipeline audit table  (width=24, height=36)
-    """
-    rows = [
-        ("ROW-1", [(0, 6, 18), (1, 6, 18), (2, 6, 18), (3, 6, 18)]),
-        ("ROW-2", [(4, 8, 40), (5, 16, 40)]),
-        ("ROW-3", [(6, 24, 36)]),
-        ("ROW-4", [(7, 24, 36)]),
-    ]
+    """Three full-width rows — one per layer."""
+    row_ids = ["ROW-BRONZE", "ROW-SILVER", "ROW-GOLD"]
+    chart_node_ids = ["CHART-BRONZE", "CHART-SILVER", "CHART-GOLD"]
 
     layout: dict[str, Any] = {
         "DASHBOARD_VERSION_KEY": "v2",
         "ROOT_ID": {"type": "ROOT", "id": "ROOT_ID", "children": ["GRID_ID"]},
         "GRID_ID": {
             "type": "GRID", "id": "GRID_ID",
-            "children": [r[0] for r in rows],
+            "children": row_ids,
             "parents": ["ROOT_ID"],
         },
     }
 
-    for row_id, slots in rows:
-        node_ids = []
-        for chart_idx, width, height in slots:
-            node_id = f"CHART-{chart_idx}"
-            node_ids.append(node_id)
-            layout[node_id] = {
-                "type": "CHART", "id": node_id,
-                "children": [], "parents": [row_id],
-                "meta": {
-                    "chartId": chart_ids[chart_idx],
-                    "width": width,
-                    "height": height,
-                },
-            }
+    for i, (row_id, node_id, chart_id) in enumerate(zip(row_ids, chart_node_ids, chart_ids)):
+        layout[node_id] = {
+            "type": "CHART", "id": node_id,
+            "children": [], "parents": [row_id],
+            "meta": {"chartId": chart_id, "width": 24, "height": 22},
+        }
         layout[row_id] = {
             "type": "ROW", "id": row_id,
-            "children": node_ids, "parents": ["GRID_ID"],
+            "children": [node_id], "parents": ["GRID_ID"],
             "meta": {"background": "BACKGROUND_TRANSPARENT"},
         }
 
@@ -511,31 +377,17 @@ def _build_position_json(chart_ids: list[int]) -> str:
 
 
 def setup_dashboard(client: SupersetClient, chart_ids: list[int]) -> int:
-    """Create or update the dashboard, return its id."""
-    position_json = _build_position_json(chart_ids)
-    payload = {
+    result = client.post("/api/v1/dashboard/", {
         "dashboard_title": DASHBOARD_TITLE,
         "published": True,
-        "position_json": position_json,
-    }
+        "position_json": _build_position_json(chart_ids),
+    })
+    dash_id = result["id"]
 
-    existing = client.find_by_name("/api/v1/dashboard/", "dashboard_title", DASHBOARD_TITLE)
-    if existing:
-        dash_id = existing["id"]
-        client.put(f"/api/v1/dashboard/{dash_id}", payload)
-        logger.info("Updated dashboard layout: %s (id=%d)", DASHBOARD_TITLE, dash_id)
-    else:
-        result = client.post("/api/v1/dashboard/", payload)
-        dash_id = result["id"]
-        logger.info("Created dashboard: %s (id=%d)", DASHBOARD_TITLE, dash_id)
-
-    # In Superset 3.x, charts are linked to a dashboard by PUTting the dashboard id
-    # onto each chart's 'dashboards' field — position_json alone is not enough.
     for cid in chart_ids:
         client.put(f"/api/v1/chart/{cid}", {"dashboards": [dash_id]})
-        logger.debug("Linked chart %d → dashboard %d", cid, dash_id)
-    logger.info("Linked %d charts to dashboard %d", len(chart_ids), dash_id)
 
+    logger.info("Created dashboard: %s (id=%d)", DASHBOARD_TITLE, dash_id)
     return dash_id
 
 
@@ -544,7 +396,6 @@ def setup_dashboard(client: SupersetClient, chart_ids: list[int]) -> int:
 # ---------------------------------------------------------------------------
 
 def run() -> dict:
-    """Run the full Superset setup sequence."""
     missing = [v for v in ["SUPERSET_URL", "SUPERSET_USER", "SUPERSET_PASSWORD", "GP_PASSWORD"]
                if not os.getenv(v)]
     if missing:
@@ -555,16 +406,19 @@ def run() -> dict:
 
     client = SupersetClient(SUPERSET_URL, SUPERSET_USER, SUPERSET_PASSWORD)
 
-    logger.info("Step 1/4 — Register Greenplum database")
+    logger.info("Step 1/5 — Tear down previous version")
+    teardown(client)
+
+    logger.info("Step 2/5 — Register Greenplum database")
     db_id = setup_database(client)
 
-    logger.info("Step 2/4 — Create datasets")
+    logger.info("Step 3/5 — Create datasets")
     datasets = setup_datasets(client, db_id)
 
-    logger.info("Step 3/4 — Create charts")
+    logger.info("Step 4/5 — Create charts")
     chart_ids = setup_charts(client, datasets)
 
-    logger.info("Step 4/4 — Create dashboard")
+    logger.info("Step 5/5 — Create dashboard")
     dash_id = setup_dashboard(client, chart_ids)
 
     duration = time.perf_counter() - t0
