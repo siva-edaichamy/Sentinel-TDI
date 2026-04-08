@@ -347,8 +347,7 @@ def setup_charts(client: SupersetClient, datasets: dict[str, int]) -> list[int]:
 # ---------------------------------------------------------------------------
 
 def _build_position_json(chart_ids: list[int]) -> str:
-    """Three full-width rows — one per layer."""
-    row_ids = ["ROW-BRONZE", "ROW-SILVER", "ROW-GOLD"]
+    """One row, three columns — Bronze | Silver | Gold, each width=8."""
     chart_node_ids = ["CHART-BRONZE", "CHART-SILVER", "CHART-GOLD"]
 
     layout: dict[str, Any] = {
@@ -356,21 +355,21 @@ def _build_position_json(chart_ids: list[int]) -> str:
         "ROOT_ID": {"type": "ROOT", "id": "ROOT_ID", "children": ["GRID_ID"]},
         "GRID_ID": {
             "type": "GRID", "id": "GRID_ID",
-            "children": row_ids,
+            "children": ["ROW-MAIN"],
             "parents": ["ROOT_ID"],
+        },
+        "ROW-MAIN": {
+            "type": "ROW", "id": "ROW-MAIN",
+            "children": chart_node_ids, "parents": ["GRID_ID"],
+            "meta": {"background": "BACKGROUND_TRANSPARENT"},
         },
     }
 
-    for i, (row_id, node_id, chart_id) in enumerate(zip(row_ids, chart_node_ids, chart_ids)):
+    for node_id, chart_id in zip(chart_node_ids, chart_ids):
         layout[node_id] = {
             "type": "CHART", "id": node_id,
-            "children": [], "parents": [row_id],
-            "meta": {"chartId": chart_id, "width": 24, "height": 22},
-        }
-        layout[row_id] = {
-            "type": "ROW", "id": row_id,
-            "children": [node_id], "parents": ["GRID_ID"],
-            "meta": {"background": "BACKGROUND_TRANSPARENT"},
+            "children": [], "parents": ["ROW-MAIN"],
+            "meta": {"chartId": chart_id, "width": 8, "height": 38},
         }
 
     return json.dumps(layout)
