@@ -339,16 +339,19 @@ def _chart_specs(datasets: dict[str, int]) -> list[dict]:
 
         # ── Row 2: Gold anomaly distribution ───────────────────────────────
         {
+            # echarts_pie requires the echarts plugin bundle — falls back to table
+            # if the plugin is not registered in this Superset build.
             "slice_name": "Anomaly Tier Distribution",
-            "viz_type":   "pie",
+            "viz_type":   "table",
             "datasource_id": latest_ds,
             "params": json.dumps({
-                **_base_params("pie", latest_ds),
+                **_base_params("table", latest_ds),
+                "query_mode": "aggregate",
                 "groupby": ["anomaly_tier"],
-                "metric": m_emp_count,
-                "labels_outside": True,
-                "show_legend": True,
-                "donut": False,
+                "metrics": [m_emp_count],
+                "row_limit": 10,
+                "order_desc": True,
+                "server_pagination": False,
             }),
             "query_context": _query_context(latest_ds, [m_emp_count],
                                             groupby=["anomaly_tier"]),
@@ -381,19 +384,19 @@ def _chart_specs(datasets: dict[str, int]) -> list[dict]:
 
         # ── Row 3: Silver identity resolution ──────────────────────────────
         {
+            # echarts_bar requires the echarts plugin bundle — falls back to table
+            # if the plugin is not registered in this Superset build.
             "slice_name": "Silver Identity Resolution by Domain",
-            "viz_type":   "dist_bar",
+            "viz_type":   "table",
             "datasource_id": silver_ds,
             "params": json.dumps({
-                **_base_params("dist_bar", silver_ds),
-                "columns": ["identity_resolution_status"],
-                "groupby": ["domain"],
+                **_base_params("table", silver_ds),
+                "query_mode": "aggregate",
+                "groupby": ["domain", "identity_resolution_status"],
                 "metrics": [m_records],
-                "bar_stacked": True,
-                "show_legend": True,
-                "show_bar_value": True,
-                "x_axis_label": "Source Domain",
-                "y_axis_label": "Record Count",
+                "row_limit": 50,
+                "order_desc": False,
+                "server_pagination": False,
             }),
             "query_context": _query_context(
                 silver_ds, [m_records],
