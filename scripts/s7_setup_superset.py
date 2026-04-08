@@ -249,11 +249,42 @@ def _base_params(viz_type: str, ds_id: int, ds_type: str = "table") -> dict:
     }
 
 
+def _query_context(ds_id: int, metrics: list[dict], columns: list[str] | None = None,
+                   groupby: list[str] | None = None, row_limit: int = 1000,
+                   ds_type: str = "table") -> str:
+    """Build the query_context JSON string Superset 3.x needs to render charts."""
+    query: dict = {
+        "metrics": metrics,
+        "filters": [],
+        "row_limit": row_limit,
+        "orderby": [],
+        "extras": {},
+        "time_range": "No filter",
+        "columns": columns or [],
+        "groupby": groupby or [],
+    }
+    ctx = {
+        "datasource": {"id": ds_id, "type": ds_type},
+        "force": False,
+        "queries": [query],
+        "result_format": "json",
+        "result_type": "full",
+    }
+    return json.dumps(ctx)
+
+
 def _chart_specs(datasets: dict[str, int]) -> list[dict]:
     gold_ds   = datasets["employee_risk_features"]
     latest_ds = datasets["gold_latest_window"]
     runs_ds   = datasets["pipeline_runs"]
     silver_ds = datasets["silver_resolution_summary"]
+
+    m_employees   = _metric("COUNT(DISTINCT employee_id)", "Employees Scored")
+    m_high_risk   = _metric("COUNT(DISTINCT CASE WHEN anomaly_tier = 'HIGH' THEN employee_id END)", "HIGH Risk")
+    m_domains     = _metric("COUNT(DISTINCT domain)", "Domains Loaded")
+    m_stage_runs  = _metric("COUNT(*)", "Stage Runs")
+    m_emp_count   = _metric("COUNT(DISTINCT employee_id)", "Employees")
+    m_records     = _metric("SUM(row_count)", "Records")
 
     return [
         # ── Row 1: Scorecards ───────────────────────────────────────────────
@@ -263,10 +294,11 @@ def _chart_specs(datasets: dict[str, int]) -> list[dict]:
             "datasource_id": gold_ds,
             "params": json.dumps({
                 **_base_params("big_number_total", gold_ds),
-                "metric": _metric("COUNT(DISTINCT employee_id)", "Employees Scored"),
+                "metric": m_employees,
                 "subheader": "total employees with anomaly scores",
                 "y_axis_format": "SMART_NUMBER",
             }),
+            "query_context": _query_context(gold_ds, [m_employees], row_limit=1),
         },
         {
             "slice_name": "HIGH Risk Employees",
@@ -274,13 +306,11 @@ def _chart_specs(datasets: dict[str, int]) -> list[dict]:
             "datasource_id": gold_ds,
             "params": json.dumps({
                 **_base_params("big_number_total", gold_ds),
-                "metric": _metric(
-                    "COUNT(DISTINCT CASE WHEN anomaly_tier = 'HIGH' THEN employee_id END)",
-                    "HIGH Risk",
-                ),
+                "metric": m_high_risk,
                 "subheader": "anomaly tier HIGH — top 5% by score",
                 "y_axis_format": "SMART_NUMBER",
             }),
+            "query_context": _query_context(gold_ds, [m_high_risk], row_limit=1),
         },
         {
             "slice_name": "Silver Domains Loaded",
@@ -288,10 +318,11 @@ def _chart_specs(datasets: dict[str, int]) -> list[dict]:
             "datasource_id": silver_ds,
             "params": json.dumps({
                 **_base_params("big_number_total", silver_ds),
-                "metric": _metric("COUNT(DISTINCT domain)", "Domains Loaded"),
+                "metric": m_domains,
                 "subheader": "Silver domains with resolved records",
                 "y_axis_format": "SMART_NUMBER",
             }),
+            "query_context": _query_context(silver_ds, [m_domains], row_limit=1),
         },
         {
             "slice_name": "Pipeline Stages Run",
@@ -299,10 +330,11 @@ def _chart_specs(datasets: dict[str, int]) -> list[dict]:
             "datasource_id": runs_ds,
             "params": json.dumps({
                 **_base_params("big_number_total", runs_ds),
-                "metric": _metric("COUNT(*)", "Stage Runs"),
+                "metric": m_stage_runs,
                 "subheader": "pipeline stage executions logged",
                 "y_axis_format": "SMART_NUMBER",
             }),
+            "query_context": _query_context(runs_ds, [m_stage_runs], row_limit=1),
         },
 
         # ── Row 2: Gold anomaly distribution ───────────────────────────────
@@ -313,12 +345,14 @@ def _chart_specs(datasets: dict[str, int]) -> list[dict]:
             "params": json.dumps({
                 **_base_params("echarts_pie", latest_ds),
                 "groupby": ["anomaly_tier"],
-                "metric": _metric("COUNT(DISTINCT employee_id)", "Employees"),
+                "metric": m_emp_count,
                 "innerRadius": 30,
                 "outerRadius": 70,
                 "labelsOutside": True,
                 "show_legend": True,
             }),
+            "query_context": _query_context(latest_ds, [m_emp_count],
+                                            groupby=["anomaly_tier"]),
         },
         {
             "slice_name": "Top 25 Highest Risk Employees",
@@ -328,19 +362,22 @@ def _chart_specs(datasets: dict[str, int]) -> list[dict]:
                 **_base_params("table", latest_ds),
                 "query_mode": "raw",
                 "columns": [
-                    "employee_id",
-                    "anomaly_tier",
-                    "anomaly_score",
-                    "anomaly_percentile",
-                    "cross_domain_anomaly_count",
-                    "cluster_id",
-                    "window_end_date",
+                    "employee_id", "anomaly_tier", "anomaly_score",
+                    "anomaly_percentile", "cross_domain_anomaly_count",
+                    "cluster_id", "window_end_date",
                 ],
                 "metrics": [],
                 "row_limit": 25,
                 "order_desc": True,
                 "server_pagination": False,
             }),
+            "query_context": _query_context(
+                latest_ds, [],
+                columns=["employee_id", "anomaly_tier", "anomaly_score",
+                         "anomaly_percentile", "cross_domain_anomaly_count",
+                         "cluster_id", "window_end_date"],
+                row_limit=25,
+            ),
         },
 
         # ── Row 3: Silver identity resolution ──────────────────────────────
@@ -352,7 +389,7 @@ def _chart_specs(datasets: dict[str, int]) -> list[dict]:
                 **_base_params("echarts_bar", silver_ds),
                 "x_axis": "domain",
                 "groupby": ["identity_resolution_status"],
-                "metrics": [_metric("SUM(row_count)", "Records")],
+                "metrics": [m_records],
                 "stack": True,
                 "show_legend": True,
                 "show_value": True,
@@ -360,6 +397,10 @@ def _chart_specs(datasets: dict[str, int]) -> list[dict]:
                 "x_axis_title": "Source Domain",
                 "y_axis_title": "Record Count",
             }),
+            "query_context": _query_context(
+                silver_ds, [m_records],
+                groupby=["domain", "identity_resolution_status"],
+            ),
         },
 
         # ── Row 4: Pipeline lineage audit ──────────────────────────────────
@@ -371,19 +412,20 @@ def _chart_specs(datasets: dict[str, int]) -> list[dict]:
                 **_base_params("table", runs_ds),
                 "query_mode": "raw",
                 "columns": [
-                    "stage_name",
-                    "status",
-                    "rows_in",
-                    "rows_out",
-                    "duration_seconds",
-                    "started_at",
-                    "completed_at",
+                    "stage_name", "status", "rows_in", "rows_out",
+                    "duration_seconds", "started_at", "completed_at",
                 ],
                 "metrics": [],
                 "row_limit": 50,
                 "order_desc": True,
                 "server_pagination": False,
             }),
+            "query_context": _query_context(
+                runs_ds, [],
+                columns=["stage_name", "status", "rows_in", "rows_out",
+                         "duration_seconds", "started_at", "completed_at"],
+                row_limit=50,
+            ),
         },
     ]
 
@@ -398,6 +440,7 @@ def setup_charts(client: SupersetClient, datasets: dict[str, int]) -> list[int]:
             "datasource_id":   spec["datasource_id"],
             "datasource_type": "table",
             "params":          spec["params"],
+            "query_context":   spec["query_context"],
         }
         existing = client.find_by_name("/api/v1/chart/", "slice_name", spec["slice_name"])
         if existing:
