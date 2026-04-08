@@ -8,7 +8,7 @@ DROP TABLE IF EXISTS insider_threat_gold.gd_kmeans_output;
 
 -- Train k-means++ on normalized feature vectors
 -- k=5 clusters, squared L2 distance, up to 20 iterations
--- WITH clause must appear before AS; DISTRIBUTED clause after the query in GP
+-- WITH clause must appear before AS — DISTRIBUTED clause after the query in GP
 CREATE TABLE insider_threat_gold.gd_kmeans_output
 WITH (appendoptimized=true, compresstype=zstd, compresslevel=5)
 AS

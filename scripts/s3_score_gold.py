@@ -895,13 +895,29 @@ def _run_madlib_sql(env: str, model_run_id: str) -> pd.DataFrame:
 
 
 def _split_sql(sql_text: str) -> list[str]:
-    """Split SQL on semicolons, skipping comment-only segments."""
+    """Split SQL on semicolons, ignoring semicolons inside -- comments."""
     stmts = []
-    for seg in sql_text.split(";"):
-        lines = [l for l in seg.splitlines() if not l.strip().startswith("--")]
-        body = " ".join(lines).strip()
+    current: list[str] = []
+    for line in sql_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("--"):
+            # Comment line — include as-is, never split on its content
+            current.append(line)
+        elif ";" in line:
+            # Split at the semicolon; anything after it starts the next statement
+            before, _, after = line.partition(";")
+            current.append(before)
+            body = " ".join(l for l in current if not l.strip().startswith("--")).strip()
+            if body:
+                stmts.append("\n".join(current).strip())
+            current = [after] if after.strip() else []
+        else:
+            current.append(line)
+    # Flush any trailing content
+    if current:
+        body = " ".join(l for l in current if not l.strip().startswith("--")).strip()
         if body:
-            stmts.append(seg.strip())
+            stmts.append("\n".join(current).strip())
     return stmts
 
 
