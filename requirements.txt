@@ -5,6 +5,7 @@ pandas>=2.2.0
 pyarrow>=15.0.0
 psycopg2-binary>=2.9.9
 boto3>=1.34.0          # MinIO / S3 upload (s1_generate_raw)
+requests>=2.31.0       # Superset REST API (s7_setup_superset)
 
 # Airflow — TaskFlow API (only needed if running the DAG, not required for running scripts directly)
 apache-airflow>=2.9.0
