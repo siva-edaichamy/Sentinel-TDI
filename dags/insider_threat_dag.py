@@ -20,7 +20,7 @@ from pathlib import Path
 
 from airflow.decorators import dag, task
 from airflow.exceptions import AirflowException
-from airflow.utils.dates import days_ago
+import pendulum
 
 # Make pipeline scripts importable from Airflow worker
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -54,7 +54,7 @@ def _check(result: dict, stage: str) -> None:
 @dag(
     dag_id="insider_threat_pipeline",
     schedule_interval="@daily",
-    start_date=days_ago(1),
+    start_date=pendulum.now("UTC").subtract(days=1),
     catchup=False,
     tags=["insider_threat", "tdi", "medallion"],
     doc_md=__doc__,
