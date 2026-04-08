@@ -451,21 +451,30 @@ def _build_position_json(chart_ids: list[int]) -> str:
 def setup_dashboard(client: SupersetClient, chart_ids: list[int]) -> int:
     """Create or update the dashboard, return its id."""
     position_json = _build_position_json(chart_ids)
+    payload = {
+        "dashboard_title": DASHBOARD_TITLE,
+        "published": True,
+        "position_json": position_json,
+    }
 
     existing = client.find_by_name("/api/v1/dashboard/", "dashboard_title", DASHBOARD_TITLE)
     if existing:
         dash_id = existing["id"]
-        client.put(f"/api/v1/dashboard/{dash_id}", {"position_json": position_json})
+        client.put(f"/api/v1/dashboard/{dash_id}", payload)
         logger.info("Updated dashboard layout: %s (id=%d)", DASHBOARD_TITLE, dash_id)
-        return dash_id
+    else:
+        result = client.post("/api/v1/dashboard/", payload)
+        dash_id = result["id"]
+        logger.info("Created dashboard: %s (id=%d)", DASHBOARD_TITLE, dash_id)
 
-    result = client.post("/api/v1/dashboard/", {
-        "dashboard_title": DASHBOARD_TITLE,
-        "published": True,
-        "position_json": position_json,
-    })
-    logger.info("Created dashboard: %s (id=%d)", DASHBOARD_TITLE, result["id"])
-    return result["id"]
+    # In Superset 3.x, charts are linked to a dashboard by PUTting the dashboard id
+    # onto each chart's 'dashboards' field — position_json alone is not enough.
+    for cid in chart_ids:
+        client.put(f"/api/v1/chart/{cid}", {"dashboards": [dash_id]})
+        logger.debug("Linked chart %d → dashboard %d", cid, dash_id)
+    logger.info("Linked %d charts to dashboard %d", len(chart_ids), dash_id)
+
+    return dash_id
 
 
 # ---------------------------------------------------------------------------
