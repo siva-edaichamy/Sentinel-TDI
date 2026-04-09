@@ -365,9 +365,7 @@ def setup_datasets(client: SupersetClient, db_id: int) -> dict[str, int]:
         existing = client.find_by_name("/api/v1/dataset/", "table_name", name)
         if existing:
             ds_id = existing["id"]
-            client.put(f"/api/v1/dataset/{ds_id}", {
-                "sql": sql,
-            })
+            client.put(f"/api/v1/dataset/{ds_id}", {"sql": sql})
             datasets[name] = ds_id
             logger.info("Updated existing dataset: %s (id=%d)", name, ds_id)
         else:
@@ -381,6 +379,15 @@ def setup_datasets(client: SupersetClient, db_id: int) -> dict[str, int]:
             client.put(f"/api/v1/dataset/{ds_id}", {"sql": sql})
             datasets[name] = ds_id
             logger.info("Created dataset: %s (id=%d)", name, ds_id)
+        # Register columns explicitly — Superset doesn't auto-discover from virtual SQL
+        col_name = "source_name" if name == "bronze_catalog" else "table_name"
+        cols = [
+            {"column_name": col_name,       "type": "VARCHAR", "is_dttm": False, "filterable": True, "groupby": True},
+            {"column_name": "description",  "type": "VARCHAR", "is_dttm": False, "filterable": True, "groupby": True},
+            {"column_name": "record_count", "type": "INTEGER", "is_dttm": False, "filterable": True, "groupby": True},
+        ]
+        client.put(f"/api/v1/dataset/{ds_id}", {"columns": cols})
+        logger.info("Registered columns for dataset: %s (id=%d)", name, ds_id)
             datasets[name] = result["id"]
             logger.info("Created dataset: %s (id=%d)", name, result["id"])
     return datasets
