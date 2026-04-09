@@ -166,12 +166,19 @@ def teardown(client: SupersetClient) -> None:
             client.delete(f"/api/v1/chart/{existing['id']}")
             logger.info("Deleted chart: %s", name)
 
-    # Datasets
-    for name in _OLD_DATASET_NAMES:
-        existing = client.find_by_name("/api/v1/dataset/", "table_name", name)
-        if existing:
-            client.delete(f"/api/v1/dataset/{existing['id']}")
-            logger.info("Deleted dataset: %s", name)
+    # Datasets — delete ALL datasets to clear any stale virtual SQL
+    try:
+        data = client.get("/api/v1/dataset/", params={"q": json.dumps({"page_size": 100})})
+        for ds in data.get("result", []):
+            client.delete(f"/api/v1/dataset/{ds['id']}")
+            logger.info("Deleted dataset: %s (id=%d)", ds.get("table_name", "?"), ds["id"])
+    except Exception:
+        # Fallback to name-based cleanup
+        for name in _OLD_DATASET_NAMES:
+            existing = client.find_by_name("/api/v1/dataset/", "table_name", name)
+            if existing:
+                client.delete(f"/api/v1/dataset/{existing['id']}")
+                logger.info("Deleted dataset: %s", name)
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +268,7 @@ def _bronze_sql() -> str:
           "Links public social media accounts to employee HR records. Connects external social and OSINT signals to a known person in the organization."),
     ]
     unions = "\nUNION ALL\n".join(
-        f"SELECT {priority} AS \"#\", '{name}' AS source_name, '{desc.replace(chr(39), chr(39)+chr(39))}' AS description, COUNT(*)::INT AS record_count FROM {table}"
+        f"SELECT {priority} AS priority, '{name}' AS source_name, '{desc.replace(chr(39), chr(39)+chr(39))}' AS description, COUNT(*)::INT AS record_count FROM {table}"
         for priority, name, table, desc in rows
     )
     return unions
@@ -312,7 +319,7 @@ def _silver_sql() -> str:
           "Events from all sources that could not be linked to a known employee — retained for audit and coverage reporting."),
     ]
     unions = "\nUNION ALL\n".join(
-        f"SELECT {priority} AS \"#\", '{name}' AS table_name, '{desc.replace(chr(39), chr(39)+chr(39))}' AS description, COUNT(*)::INT AS record_count FROM {table}"
+        f"SELECT {priority} AS priority, '{name}' AS table_name, '{desc.replace(chr(39), chr(39)+chr(39))}' AS description, COUNT(*)::INT AS record_count FROM {table}"
         for priority, name, table, desc in rows
     )
     return unions
@@ -356,7 +363,7 @@ def _gold_sql() -> str:
           "Normalized behavioral feature vectors used as input to the peer group scoring model — one row per employee per week."),
     ]
     unions = "\nUNION ALL\n".join(
-        f"SELECT {priority} AS \"#\", '{name}' AS table_name, '{desc.replace(chr(39), chr(39)+chr(39))}' AS description, COUNT(*)::INT AS record_count FROM {table}"
+        f"SELECT {priority} AS priority, '{name}' AS table_name, '{desc.replace(chr(39), chr(39)+chr(39))}' AS description, COUNT(*)::INT AS record_count FROM {table}"
         for priority, name, table, desc in rows
     )
     return unions
@@ -414,7 +421,7 @@ def _table_params(ds_id: int, name_col: str) -> tuple[str, str]:
         "adhoc_filters": [],
         "time_range": "No filter",
         "query_mode": "raw",
-        "columns": ["#", name_col, "description", "record_count"],
+        "columns": ["priority", name_col, "description", "record_count"],
         "metrics": [],
         "row_limit": 25,
         "order_desc": False,
@@ -433,10 +440,10 @@ def _table_params(ds_id: int, name_col: str) -> tuple[str, str]:
             "metrics": [],
             "filters": [],
             "row_limit": 25,
-            "orderby": [["#", True]],
+            "orderby": [["priority", True]],
             "extras": {},
             "time_range": "No filter",
-            "columns": ["#", name_col, "description", "record_count"],
+            "columns": ["priority", name_col, "description", "record_count"],
             "groupby": [],
         }],
         "result_format": "json",
