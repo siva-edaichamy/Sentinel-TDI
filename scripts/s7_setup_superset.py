@@ -516,7 +516,7 @@ def _build_position_json(chart_ids: list[int]) -> str:
         layout[node_id] = {
             "type": "CHART", "id": node_id,
             "children": [], "parents": ["ROW-MAIN"],
-            "meta": {"chartId": chart_id, "width": 8, "height": 38},
+            "meta": {"chartId": chart_id, "width": 8, "height": 100},
         }
 
     return json.dumps(layout)
