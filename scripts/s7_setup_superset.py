@@ -253,11 +253,11 @@ def _bronze_sql() -> str:
           f"{BRONZE_SCHEMA}.ext_social_handle_map",
           "Links public social media accounts to employee HR records. Connects external social and OSINT signals to a known person in the organization."),
     ]
-    unions = "\n    UNION ALL\n    ".join(
-        f"SELECT {priority} AS priority, '{name}' AS source_name, '{desc.replace(chr(39), chr(39)+chr(39))}' AS description, COUNT(*)::INT AS record_count FROM {table}"
+    unions = "\nUNION ALL\n".join(
+        f"SELECT {priority} AS \"#\", '{name}' AS source_name, '{desc.replace(chr(39), chr(39)+chr(39))}' AS description, COUNT(*)::INT AS record_count FROM {table}"
         for priority, name, table, desc in rows
     )
-    return f"SELECT priority AS \"#\", source_name, description, record_count FROM (\n    {unions}\n) t ORDER BY priority"
+    return unions
 
 
 def _silver_sql() -> str:
@@ -304,11 +304,11 @@ def _silver_sql() -> str:
           f"{SILVER_SCHEMA}.sv_unresolved_events",
           "Events from all sources that could not be linked to a known employee — retained for audit and coverage reporting."),
     ]
-    unions = "\n    UNION ALL\n    ".join(
-        f"SELECT {priority} AS priority, '{name}' AS table_name, '{desc.replace(chr(39), chr(39)+chr(39))}' AS description, COUNT(*)::INT AS record_count FROM {table}"
+    unions = "\nUNION ALL\n".join(
+        f"SELECT {priority} AS \"#\", '{name}' AS table_name, '{desc.replace(chr(39), chr(39)+chr(39))}' AS description, COUNT(*)::INT AS record_count FROM {table}"
         for priority, name, table, desc in rows
     )
-    return f"SELECT priority AS \"#\", table_name, description, record_count FROM (\n    {unions}\n) t ORDER BY priority"
+    return unions
 
 
 def _gold_sql() -> str:
@@ -348,11 +348,11 @@ def _gold_sql() -> str:
           f"{GOLD_SCHEMA}.employee_features",
           "Normalized behavioral feature vectors used as input to the peer group scoring model — one row per employee per week."),
     ]
-    unions = "\n    UNION ALL\n    ".join(
-        f"SELECT {priority} AS priority, '{name}' AS table_name, '{desc.replace(chr(39), chr(39)+chr(39))}' AS description, COUNT(*)::INT AS record_count FROM {table}"
+    unions = "\nUNION ALL\n".join(
+        f"SELECT {priority} AS \"#\", '{name}' AS table_name, '{desc.replace(chr(39), chr(39)+chr(39))}' AS description, COUNT(*)::INT AS record_count FROM {table}"
         for priority, name, table, desc in rows
     )
-    return f"SELECT priority AS \"#\", table_name, description, record_count FROM (\n    {unions}\n) t ORDER BY priority"
+    return unions
 
 
 def setup_datasets(client: SupersetClient, db_id: int) -> dict[str, int]:
