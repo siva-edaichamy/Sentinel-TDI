@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS insider_threat_bronze.badge_registry (
     PRIMARY KEY (badge_id)
 )
 WITH (appendoptimized=true, compresstype=zstd, compresslevel=5)
-DISTRIBUTED BY (employee_id);
+DISTRIBUTED BY (badge_id);
 
 -- Machine → employee_id (with effective dates for shared workstations)
 CREATE TABLE IF NOT EXISTS insider_threat_bronze.asset_assignment (
@@ -143,7 +143,7 @@ CREATE TABLE IF NOT EXISTS insider_threat_bronze.bronze_raw_financial_stress (
     PRIMARY KEY (record_id)
 )
 WITH (appendoptimized=true, compresstype=zstd, compresslevel=5)
-DISTRIBUTED BY (employee_id);
+DISTRIBUTED BY (record_id);
 
 -- OSINT Bronze — Dark web threat intelligence detections
 CREATE TABLE IF NOT EXISTS insider_threat_bronze.bronze_raw_darkweb_signals (

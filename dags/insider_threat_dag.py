@@ -66,7 +66,7 @@ def _check(result: dict, stage: str) -> None:
 @dag(
     dag_id="insider_threat_pipeline",
     schedule="@daily",
-    start_date=pendulum.now("UTC").subtract(days=1),
+    start_date=pendulum.datetime(2026, 4, 1, tz="UTC"),
     catchup=False,
     tags=["insider_threat", "tdi", "medallion", "osint"],
     doc_md=__doc__,

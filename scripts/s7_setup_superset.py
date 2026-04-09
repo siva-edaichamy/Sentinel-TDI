@@ -95,7 +95,7 @@ class SupersetClient:
     def post(self, path: str, payload: dict) -> Any:
         resp = self.session.post(f"{self.base_url}{path}", json=payload)
         if not resp.ok:
-            logger.error("POST %s failed %d: %s", path, resp.status_code, resp.text[:400])
+            logger.error("POST %s failed %d: %s", path, resp.status_code, resp.text[:800])
         resp.raise_for_status()
         return resp.json()
 
@@ -361,13 +361,23 @@ def setup_datasets(client: SupersetClient, db_id: int) -> dict[str, int]:
         ("silver_catalog", _silver_sql()),
         ("gold_catalog",   _gold_sql()),
     ]:
-        result = client.post("/api/v1/dataset/", {
-            "database": db_id,
-            "table_name": name,
-            "sql": sql,
-        })
-        datasets[name] = result["id"]
-        logger.info("Created dataset: %s (id=%d)", name, result["id"])
+        existing = client.find_by_name("/api/v1/dataset/", "table_name", name)
+        if existing:
+            ds_id = existing["id"]
+            client.put(f"/api/v1/dataset/{ds_id}", {
+                "sql": sql,
+            })
+            datasets[name] = ds_id
+            logger.info("Updated existing dataset: %s (id=%d)", name, ds_id)
+        else:
+            result = client.post("/api/v1/dataset/", {
+                "database": db_id,
+                "table_name": name,
+                "schema": "public",
+                "sql": sql,
+            })
+            datasets[name] = result["id"]
+            logger.info("Created dataset: %s (id=%d)", name, result["id"])
     return datasets
 
 
