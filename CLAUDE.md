@@ -43,9 +43,6 @@ designed as an input feature for a future generative AI / RAG explanation layer
 | psycopg2        | Greenplum connectivity from Python                           |
 | Apache Airflow  | TaskFlow API — batch orchestration across all layers         |
 | MADlib          | Unsupervised anomaly detection (k-means + LOF callout)       |
-| RabbitMQ        | Referenced as streaming ingest path (narrative only)         |
-| SCDF            | DSL stream definitions included as reference artifacts       |
-| Cloud Foundry   | Deployment target (TAS) — `manifest.yml` per app             |
 | PostGIS         | Available in Greenplum for geospatial enrichment             |
 
 ---
@@ -374,99 +371,70 @@ insider_threat_gold     -- employee_risk_features + employee_features (MADlib in
 
 ---
 
-## SCDF Reference Artifacts
-
-SCDF stream definitions show how Silver transformations would run as real-time
-event streams in a production deployment alongside Airflow batch processing.
-These are reference/narrative artifacts — Airflow is the runnable layer.
-
-**File:** `scdf/stream_definitions.txt`
-
-```
-# PACS badge swipe — real-time Silver stream
-pacs-silver = rabbit --queues=pacs.raw \
-  | badge-resolver --mapping-table=insider_threat_bronze.badge_registry \
-  | jdbc --url=${GP_JDBC_URL} --table-name=insider_threat_silver.sv_pacs
-
-# Network log — real-time Silver stream
-network-silver = rabbit --queues=network.raw \
-  | asset-resolver --mapping-table=insider_threat_bronze.asset_assignment \
-  | jdbc --url=${GP_JDBC_URL} --table-name=insider_threat_silver.sv_network
-```
-
-Narrative framing: "Airflow handles scheduled batch ingestion and Gold-layer ML.
-SCDF handles real-time event streaming from RabbitMQ into Silver. Both write to
-the same Greenplum tables — the warehouse is the integration point."
-
----
-
 ## File and Directory Structure
 
 ```
-insider_threat_demo/
+Sentinel-TDI/
 ├── CLAUDE.md
-├── manifest.yml                        # Cloud Foundry TAS deployment manifest
 ├── requirements.txt                    # Python dependencies
 ├── .env.example                        # Environment variable template
 │
-├── agents/
-│   ├── agent0_orchestrator.py          # Coordinates full pipeline run
-│   ├── agent1_bronze.py                # Synthetic data generation (all 8 domains)
-│   ├── agent2_silver.py                # Identity resolution + conformance
-│   ├── agent3_gold.py                  # Feature derivation + MADlib scoring
-│   ├── agent4_platform.py              # DDL + DAG + manifest generation
-│   ├── agent5_validation.py            # Pipeline QA and lineage checks
-│   └── agent6_analytics.py            # Executive analytics and case narratives
+├── scripts/
+│   ├── s1_generate_raw.py              # Bronze — synthetic data generation (8 internal + 5 OSINT)
+│   ├── generate_osint_streams.py       # OSINT Bronze sub-generator (called by s1)
+│   ├── s2_transform_silver.py          # Silver — identity resolution + conformance
+│   ├── s3_score_gold.py                # Gold — feature derivation + MADlib scoring
+│   ├── s5_validate_pipeline.py         # QA — coverage, resolution rates, lineage checks
+│   ├── s6_report_analytics.py          # Report — executive analytics and validation reports
+│   ├── s7_setup_superset.py            # Dashboard — Superset catalog setup
+│   └── db.py                           # Shared Greenplum connection helper
 │
 ├── data/
-│   ├── bronze/                         # Raw synthetic files (CSV, JSON)
-│   ├── silver/                         # Parquet outputs per domain
-│   └── gold/                           # Parquet risk feature table
+│   ├── bronze/                         # Raw synthetic files (CSV, JSON) — created at runtime
+│   │   └── osint/                      # OSINT Bronze stream files (5 streams)
+│   ├── silver/                         # Parquet outputs per domain — created at runtime
+│   └── gold/                           # Parquet risk feature table — created at runtime
 │
 ├── ddl/
-│   └── ddl.sql                         # All Greenplum DDL — Bronze + Silver + Gold schemas
+│   └── ddl.sql                         # All Greenplum DDL — Bronze + Silver + Gold (internal + OSINT)
 │
 ├── dags/
-│   └── insider_threat_dag.py           # Airflow TaskFlow DAG (runnable)
-│
-├── scdf/
-│   └── stream_definitions.txt          # SCDF DSL reference (narrative)
+│   └── insider_threat_dag.py           # Airflow TaskFlow DAG (runnable, @daily)
 │
 ├── sql/
 │   ├── madlib_train.sql                # MADlib k-means training
 │   ├── madlib_score.sql                # Anomaly scoring and percentile ranking
-│   └── analytics_queries.sql          # Agent 6 dashboard queries
+│   └── analytics_queries.sql          # Dashboard analytics queries
 │
-├── schema/
-│   ├── bronze_schema_map.json
-│   ├── silver_lineage_map.json
-│   └── feature_dictionary.json
+├── config/
+│   └── pxf-minio-server/
+│       └── s3-site.xml.example         # PXF → MinIO config template (fill in credentials)
 │
-└── reports/
-    ├── validation_report.md
-    └── executive_analytics.md
+├── schema/                             # Generated schema documentation — created at runtime
+└── reports/                            # Generated validation and analytics reports — created at runtime
 ```
 
 ---
 
-## Agent Execution Order
+## Script Execution Order
 
 ```
-agent0_orchestrator
-  └─► agent1_bronze          -- verify row counts + schema before proceeding
-        └─► agent2_silver    -- verify identity resolution rate + lineage before proceeding
-              └─► agent3_gold
-                    └─► agent4_platform
-                          └─► agent5_validation
-                                └─► agent6_analytics
+s1_generate_raw      (Bronze — no deps)
+  └─► s2_transform_silver × 8 internal  (Silver — parallel)
+        └─► s2_transform_silver × 5 OSINT  (Silver — parallel, after internal)
+              └─► s3_score_gold          (Gold — MADlib + OSINT stream tables)
+                    └─► s5_validate_pipeline
+                          └─► s6_report_analytics
 ```
 
-Each agent must be independently runnable:
+Each script is independently runnable:
 ```bash
-python agents/agent1_bronze.py
-python agents/agent2_silver.py
-python agents/agent3_gold.py
-# etc.
+cd scripts
+python s1_generate_raw.py
+python s2_transform_silver.py
+python s3_score_gold.py
+python s5_validate_pipeline.py
+python s6_report_analytics.py
 ```
 
 ---

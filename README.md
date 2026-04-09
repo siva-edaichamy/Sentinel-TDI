@@ -153,13 +153,6 @@ python s5_validate_pipeline.py   # Run validation checks and lineage report
 python s6_report_analytics.py    # Generate executive analytics report
 ```
 
-To run the full pipeline in sequence:
-
-```bash
-cd scripts
-python s0_orchestrate.py
-```
-
 ---
 
 ## Pipeline stages
@@ -172,7 +165,6 @@ python s0_orchestrate.py
 | `s3_score_gold.py` | Gold | Joins Silver domains, derives behavioral features, runs MADlib kmeanspp; also scores 5 OSINT Gold stream tables + composite |
 | `s5_validate_pipeline.py` | QA | Checks coverage, identity resolution rates, null rates, cluster distribution, and OSINT stream table populations |
 | `s6_report_analytics.py` | Report | Writes executive analytics and validation reports to `reports/` |
-| `s4_build_platform.py` | Platform | Regenerates DDL, DAG, and MADlib SQL from templates (dev use) |
 
 ### OSINT Augmentation (5 external behavioral streams)
 
@@ -216,7 +208,6 @@ ddl/
   ddl.sql        Greenplum DDL — Bronze, Silver, Gold (internal)
   ddl_osint.sql  Greenplum DDL — Bronze, Silver, Gold (OSINT augmentation)
 reports/         Generated validation and analytics reports (gitignored)
-scdf/            SCDF stream definitions (reference/narrative only)
 sql/             MADlib training and scoring SQL
 schema/          Generated schema documentation (gitignored)
 ```
