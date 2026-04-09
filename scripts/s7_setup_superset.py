@@ -95,7 +95,8 @@ class SupersetClient:
     def post(self, path: str, payload: dict) -> Any:
         resp = self.session.post(f"{self.base_url}{path}", json=payload)
         if not resp.ok:
-            logger.error("POST %s failed %d: %s", path, resp.status_code, resp.text[:800])
+            logger.error("POST %s failed %d: %s", path, resp.status_code, resp.text[:1500])
+            logger.error("POST payload keys: %s", list(payload.keys()))
         resp.raise_for_status()
         return resp.json()
 
@@ -373,8 +374,9 @@ def setup_datasets(client: SupersetClient, db_id: int) -> dict[str, int]:
             result = client.post("/api/v1/dataset/", {
                 "database": db_id,
                 "table_name": name,
-                "schema": "public",
+                "schema": "",
                 "sql": sql,
+                "owners": [],
             })
             datasets[name] = result["id"]
             logger.info("Created dataset: %s (id=%d)", name, result["id"])
