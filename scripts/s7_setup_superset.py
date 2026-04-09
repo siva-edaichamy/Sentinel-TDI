@@ -405,11 +405,12 @@ def _table_params(ds_id: int, name_col: str) -> tuple[str, str]:
         "query_mode": "raw",
         "columns": [name_col, "description", "record_count"],
         "metrics": [],
-        "row_limit": 20,
+        "row_limit": 25,
         "order_desc": False,
         "server_pagination": False,
         "align_pn": False,
         "color_pn": False,
+        "page_length": 25,
         "show_totals": False,
         "conditional_formatting": [],
     }
@@ -419,7 +420,7 @@ def _table_params(ds_id: int, name_col: str) -> tuple[str, str]:
         "queries": [{
             "metrics": [],
             "filters": [],
-            "row_limit": 20,
+            "row_limit": 25,
             "orderby": [],
             "extras": {},
             "time_range": "No filter",
