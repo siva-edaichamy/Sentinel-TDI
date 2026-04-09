@@ -145,7 +145,8 @@ _OLD_DATASET_NAMES = [
     "employee_risk_features", "pipeline_runs",
     "silver_resolution_summary", "gold_latest_window",
     "bronze_catalog", "silver_catalog", "gold_catalog",
-    # OSINT datasets (if ever created as separate datasets)
+    "v_bronze_catalog", "v_silver_catalog", "v_gold_catalog",
+    "dashboard_bronze_catalog", "dashboard_silver_catalog", "dashboard_gold_catalog",
     "osint_bronze_catalog", "osint_silver_catalog", "osint_gold_catalog",
 ]
 
@@ -361,30 +362,31 @@ def _gold_sql() -> str:
     return unions
 
 
-def _create_catalog_views(env: str) -> None:
-    """Create or replace catalog views in Greenplum so Superset reads physical views."""
-    view_defs = [
-        ("insider_threat_bronze.v_bronze_catalog", _bronze_sql()),
-        ("insider_threat_silver.v_silver_catalog", _silver_sql()),
-        ("insider_threat_gold.v_gold_catalog",     _gold_sql()),
+def _create_catalog_tables(env: str) -> None:
+    """Populate catalog tables in Greenplum so Superset reads them as physical tables."""
+    catalog_defs = [
+        ("insider_threat_bronze.dashboard_bronze_catalog", _bronze_sql()),
+        ("insider_threat_silver.dashboard_silver_catalog", _silver_sql()),
+        ("insider_threat_gold.dashboard_gold_catalog",     _gold_sql()),
     ]
     with get_connection(env) as conn:
         conn.autocommit = True
         with conn.cursor() as cur:
-            for view_name, sql in view_defs:
-                cur.execute(f"CREATE OR REPLACE VIEW {view_name} AS {sql}")
-                logger.info("Created view: %s", view_name)
+            for table_name, sql in catalog_defs:
+                cur.execute(f"DROP TABLE IF EXISTS {table_name}")
+                cur.execute(f"CREATE TABLE {table_name} AS {sql} DISTRIBUTED RANDOMLY")
+                logger.info("Created catalog table: %s", table_name)
 
 
 def setup_datasets(client: SupersetClient, db_id: int) -> dict[str, int]:
     datasets = {}
-    catalog_views = [
-        ("bronze_catalog", "insider_threat_bronze", "v_bronze_catalog"),
-        ("silver_catalog", "insider_threat_silver", "v_silver_catalog"),
-        ("gold_catalog",   "insider_threat_gold",   "v_gold_catalog"),
+    catalog_tables = [
+        ("bronze_catalog", "insider_threat_bronze", "dashboard_bronze_catalog"),
+        ("silver_catalog", "insider_threat_silver", "dashboard_silver_catalog"),
+        ("gold_catalog",   "insider_threat_gold",   "dashboard_gold_catalog"),
     ]
-    for ds_name, schema, view in catalog_views:
-        existing = client.find_by_name("/api/v1/dataset/", "table_name", view)
+    for ds_name, schema, table in catalog_tables:
+        existing = client.find_by_name("/api/v1/dataset/", "table_name", table)
         if existing:
             ds_id = existing["id"]
             datasets[ds_name] = ds_id
@@ -392,11 +394,11 @@ def setup_datasets(client: SupersetClient, db_id: int) -> dict[str, int]:
         else:
             result = client.post("/api/v1/dataset/", {
                 "database": db_id,
-                "table_name": view,
+                "table_name": table,
                 "schema": schema,
             })
             datasets[ds_name] = result["id"]
-            logger.info("Created dataset: %s -> %s.%s (id=%d)", ds_name, schema, view, result["id"])
+            logger.info("Created dataset: %s -> %s.%s (id=%d)", ds_name, schema, table, result["id"])
     return datasets
 
 
@@ -550,8 +552,8 @@ def run() -> dict:
     db_id = setup_database(client)
 
     env = os.getenv("PIPELINE_ENV", "prod")
-    logger.info("Step 3/6 — Create catalog views in Greenplum")
-    _create_catalog_views(env)
+    logger.info("Step 3/6 — Populate catalog tables in Greenplum")
+    _create_catalog_tables(env)
 
     logger.info("Step 4/6 — Create datasets")
     datasets = setup_datasets(client, db_id)
