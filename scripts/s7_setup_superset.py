@@ -30,7 +30,13 @@ from typing import Any
 import requests
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+load_dotenv(_SCRIPTS_DIR.parent / ".env")
+
+from db import get_connection
 
 # ---------------------------------------------------------------------------
 # Config — all from environment variables
@@ -355,40 +361,42 @@ def _gold_sql() -> str:
     return unions
 
 
+def _create_catalog_views(env: str) -> None:
+    """Create or replace catalog views in Greenplum so Superset reads physical views."""
+    view_defs = [
+        ("insider_threat_bronze.v_bronze_catalog", _bronze_sql()),
+        ("insider_threat_silver.v_silver_catalog", _silver_sql()),
+        ("insider_threat_gold.v_gold_catalog",     _gold_sql()),
+    ]
+    with get_connection(env) as conn:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            for view_name, sql in view_defs:
+                cur.execute(f"CREATE OR REPLACE VIEW {view_name} AS {sql}")
+                logger.info("Created view: %s", view_name)
+
+
 def setup_datasets(client: SupersetClient, db_id: int) -> dict[str, int]:
     datasets = {}
-    for name, sql in [
-        ("bronze_catalog", _bronze_sql()),
-        ("silver_catalog", _silver_sql()),
-        ("gold_catalog",   _gold_sql()),
-    ]:
-        existing = client.find_by_name("/api/v1/dataset/", "table_name", name)
+    catalog_views = [
+        ("bronze_catalog", "insider_threat_bronze", "v_bronze_catalog"),
+        ("silver_catalog", "insider_threat_silver", "v_silver_catalog"),
+        ("gold_catalog",   "insider_threat_gold",   "v_gold_catalog"),
+    ]
+    for ds_name, schema, view in catalog_views:
+        existing = client.find_by_name("/api/v1/dataset/", "table_name", view)
         if existing:
             ds_id = existing["id"]
-            client.put(f"/api/v1/dataset/{ds_id}", {"sql": sql})
-            datasets[name] = ds_id
-            logger.info("Updated existing dataset: %s (id=%d)", name, ds_id)
+            datasets[ds_name] = ds_id
+            logger.info("Dataset already exists: %s (id=%d)", ds_name, ds_id)
         else:
-            # Superset 3.x rejects complex SQL in POST — create with stub, then PUT real SQL
             result = client.post("/api/v1/dataset/", {
                 "database": db_id,
-                "table_name": name,
-                "sql": "SELECT 1 AS placeholder",
+                "table_name": view,
+                "schema": schema,
             })
-            ds_id = result["id"]
-            client.put(f"/api/v1/dataset/{ds_id}", {"sql": sql})
-            datasets[name] = ds_id
-            logger.info("Created dataset: %s (id=%d)", name, ds_id)
-        # Register columns explicitly — Superset doesn't auto-discover from virtual SQL
-        col_name = "source_name" if name == "bronze_catalog" else "table_name"
-        cols = [
-            {"column_name": "#",            "type": "INTEGER", "is_dttm": False, "filterable": True, "groupby": True},
-            {"column_name": col_name,       "type": "VARCHAR", "is_dttm": False, "filterable": True, "groupby": True},
-            {"column_name": "description",  "type": "VARCHAR", "is_dttm": False, "filterable": True, "groupby": True},
-            {"column_name": "record_count", "type": "INTEGER", "is_dttm": False, "filterable": True, "groupby": True},
-        ]
-        client.put(f"/api/v1/dataset/{ds_id}", {"columns": cols})
-        logger.info("Registered columns for dataset: %s (id=%d)", name, ds_id)
+            datasets[ds_name] = result["id"]
+            logger.info("Created dataset: %s -> %s.%s (id=%d)", ds_name, schema, view, result["id"])
     return datasets
 
 
@@ -535,19 +543,23 @@ def run() -> dict:
 
     client = SupersetClient(SUPERSET_URL, SUPERSET_USER, SUPERSET_PASSWORD)
 
-    logger.info("Step 1/5 — Tear down previous version")
+    logger.info("Step 1/6 — Tear down previous version")
     teardown(client)
 
-    logger.info("Step 2/5 — Register Greenplum database")
+    logger.info("Step 2/6 — Register Greenplum database")
     db_id = setup_database(client)
 
-    logger.info("Step 3/5 — Create datasets")
+    env = os.getenv("PIPELINE_ENV", "prod")
+    logger.info("Step 3/6 — Create catalog views in Greenplum")
+    _create_catalog_views(env)
+
+    logger.info("Step 4/6 — Create datasets")
     datasets = setup_datasets(client, db_id)
 
-    logger.info("Step 4/5 — Create charts")
+    logger.info("Step 5/6 — Create charts")
     chart_ids = setup_charts(client, datasets)
 
-    logger.info("Step 5/5 — Create dashboard")
+    logger.info("Step 6/6 — Create dashboard")
     dash_id = setup_dashboard(client, chart_ids)
 
     duration = time.perf_counter() - t0
