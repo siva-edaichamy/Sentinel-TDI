@@ -205,17 +205,23 @@ def _gen_directory(employees: pd.DataFrame) -> pd.DataFrame:
 
 
 def _gen_social_handle_map(employees: pd.DataFrame, fake: Faker) -> pd.DataFrame:
-    """Social handles — ~5% unmapped (no employee_id link)."""
+    """Social handles — one per platform per employee, ~5% unmapped ghosts."""
     rng = np.random.default_rng(RANDOM_SEED + 2)
     rows = []
-    platforms = ["twitter", "linkedin", "reddit"]
+    platforms = ["twitter", "instagram", "linkedin"]
     for _, emp in employees.iterrows():
-        platform = platforms[rng.integers(0, len(platforms))]
-        rows.append({
-            "social_handle": f"@{fake.user_name()}_{emp['employee_id'].lower()}",
-            "employee_id":   emp["employee_id"],
-            "platform":      platform,
-        })
+        # Each employee gets 1-3 platforms (always twitter, ~70% instagram, ~50% linkedin)
+        emp_platforms = ["twitter"]
+        if rng.random() < 0.70:
+            emp_platforms.append("instagram")
+        if rng.random() < 0.50:
+            emp_platforms.append("linkedin")
+        for platform in emp_platforms:
+            rows.append({
+                "social_handle": f"@{fake.user_name()}_{emp['employee_id'].lower()}_{platform[:2]}",
+                "employee_id":   emp["employee_id"],
+                "platform":      platform,
+            })
     # Add ~5% ghost handles (no employee link)
     ghost_count = int(EMPLOYEE_COUNT * 0.05)
     for _ in range(ghost_count):
@@ -445,8 +451,10 @@ def _gen_pai(employees: pd.DataFrame, timeline: list[date], fake: Faker,
     """Public/social media — sentiment scores and post frequency."""
     rng = np.random.default_rng(RANDOM_SEED + 50)
     records = []
-    # Build emp_id → social_handle lookup
-    handle_lookup = dict(zip(social_map["employee_id"], social_map["social_handle"]))
+    # Build emp_id → (social_handle, platform) lookup — prefer twitter handle for PAI
+    twitter_map = social_map[social_map["platform"] == "twitter"]
+    handle_lookup = dict(zip(twitter_map["employee_id"], twitter_map["social_handle"]))
+    platform_lookup = {eid: "twitter" for eid in handle_lookup}
 
     for _, emp in employees.iterrows():
         is_high_risk = emp["is_high_risk"]
@@ -476,7 +484,7 @@ def _gen_pai(employees: pd.DataFrame, timeline: list[date], fake: Faker,
             records.append({
                 "social_handle":    social_handle,
                 "event_timestamp":  _iso(dt),
-                "platform":         social_map[social_map["employee_id"] == emp["employee_id"]]["platform"].iloc[0],
+                "platform":         platform_lookup.get(emp["employee_id"], "twitter"),
                 "sentiment_score":  round(sentiment, 4),
                 "post_count":       int(rng.integers(1, 5)),
                 "engagement_count": int(rng.integers(0, 200)),

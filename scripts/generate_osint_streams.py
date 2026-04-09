@@ -552,7 +552,7 @@ def generate_lifestyle(handles_df: pd.DataFrame, hris_df: pd.DataFrame,
 
             # Value ranges by signal type and threat status
             if sig_type == "luxury_purchase":
-                value = int(rng.integers(5000, 45000 if is_high_risk else 2000))
+                value = int(rng.integers(5000, 45000) if is_high_risk else rng.integers(500, 2000))
                 item = str(rng.choice(["Rolex watch", "Louis Vuitton bag", "designer suit",
                                        "luxury watch", "Hermes bag", "diamond jewelry"]))
                 template = str(rng.choice(_LIFESTYLE_TEMPLATES["luxury_purchase"]))
@@ -567,20 +567,20 @@ def generate_lifestyle(handles_df: pd.DataFrame, hris_df: pd.DataFrame,
                 raw_text = template.format(name=name_str, year=year, make=make, model=model, county=county)
                 source = "vehicle_registration"
             elif sig_type == "property_upgrade":
-                value = int(rng.integers(450000, 900000 if is_high_risk else 350000))
+                value = int(rng.integers(450000, 900000) if is_high_risk else rng.integers(200000, 350000))
                 address = f"{rng.integers(100,9999)} {fake.street_name()}, {rng.choice(['Bethesda', 'McLean', 'Arlington'])} MD/VA"
                 template = str(rng.choice(_LIFESTYLE_TEMPLATES["property_upgrade"]))
                 raw_text = template.format(name=name_str, address=address, value=value)
                 source = "property_record"
             elif sig_type == "travel_upgrade":
-                value = int(rng.integers(800, 8000 if is_high_risk else 1200))
+                value = int(rng.integers(800, 8000) if is_high_risk else rng.integers(300, 1200))
                 dest = str(rng.choice(["London", "Paris", "Zurich", "Dubai", "Singapore", "Tokyo"]))
                 airport = str(rng.choice(["Dulles IAD", "Reagan DCA", "BWI"]))
                 template = str(rng.choice(_LIFESTYLE_TEMPLATES["travel_upgrade"]))
                 raw_text = template.format(destination=dest, airport=airport, value=value)
                 source = "instagram_post"
             else:  # fine_dining
-                value = int(rng.integers(150, 800 if is_high_risk else 200))
+                value = int(rng.integers(150, 800) if is_high_risk else rng.integers(50, 200))
                 restaurant = str(rng.choice(_RESTAURANTS))
                 template = str(rng.choice(_LIFESTYLE_TEMPLATES["fine_dining"]))
                 raw_text = template.format(restaurant=restaurant, value=value, n=rng.integers(2, 6))
