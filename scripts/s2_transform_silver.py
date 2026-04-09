@@ -681,12 +681,12 @@ def _sql_osint_lifestyle(ingested_at: str) -> tuple[str, str]:
             b.signal_type,
             b.estimated_value_usd,
             b.salary_band,
-            ROUND(CAST(b.estimated_value_usd AS FLOAT8) /
+            ROUND((CAST(b.estimated_value_usd AS NUMERIC) /
                 CASE b.salary_band
                     WHEN 'senior' THEN 5000.0
                     WHEN 'mid'    THEN 2000.0
                     ELSE               1000.0
-                END, 4)                                              AS incongruity_score,
+                END)::NUMERIC, 4)                                    AS incongruity_score,
             SUM(b.estimated_value_usd) OVER (
                 PARTITION BY b.employee_id
                 ORDER BY b.event_date
