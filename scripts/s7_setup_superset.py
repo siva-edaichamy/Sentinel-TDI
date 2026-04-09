@@ -257,7 +257,7 @@ def _bronze_sql() -> str:
         f"SELECT {priority} AS priority, '{name}' AS source_name, '{desc.replace(chr(39), chr(39)+chr(39))}' AS description, COUNT(*)::INT AS record_count FROM {table}"
         for priority, name, table, desc in rows
     )
-    return f"SELECT source_name, description, record_count FROM (\n    {unions}\n) t ORDER BY priority"
+    return f"SELECT priority AS \"#\", source_name, description, record_count FROM (\n    {unions}\n) t ORDER BY priority"
 
 
 def _silver_sql() -> str:
@@ -308,7 +308,7 @@ def _silver_sql() -> str:
         f"SELECT {priority} AS priority, '{name}' AS table_name, '{desc.replace(chr(39), chr(39)+chr(39))}' AS description, COUNT(*)::INT AS record_count FROM {table}"
         for priority, name, table, desc in rows
     )
-    return f"SELECT table_name, description, record_count FROM (\n    {unions}\n) t ORDER BY priority"
+    return f"SELECT priority AS \"#\", table_name, description, record_count FROM (\n    {unions}\n) t ORDER BY priority"
 
 
 def _gold_sql() -> str:
@@ -352,7 +352,7 @@ def _gold_sql() -> str:
         f"SELECT {priority} AS priority, '{name}' AS table_name, '{desc.replace(chr(39), chr(39)+chr(39))}' AS description, COUNT(*)::INT AS record_count FROM {table}"
         for priority, name, table, desc in rows
     )
-    return f"SELECT table_name, description, record_count FROM (\n    {unions}\n) t ORDER BY priority"
+    return f"SELECT priority AS \"#\", table_name, description, record_count FROM (\n    {unions}\n) t ORDER BY priority"
 
 
 def setup_datasets(client: SupersetClient, db_id: int) -> dict[str, int]:
@@ -382,6 +382,7 @@ def setup_datasets(client: SupersetClient, db_id: int) -> dict[str, int]:
         # Register columns explicitly — Superset doesn't auto-discover from virtual SQL
         col_name = "source_name" if name == "bronze_catalog" else "table_name"
         cols = [
+            {"column_name": "#",            "type": "INTEGER", "is_dttm": False, "filterable": True, "groupby": True},
             {"column_name": col_name,       "type": "VARCHAR", "is_dttm": False, "filterable": True, "groupby": True},
             {"column_name": "description",  "type": "VARCHAR", "is_dttm": False, "filterable": True, "groupby": True},
             {"column_name": "record_count", "type": "INTEGER", "is_dttm": False, "filterable": True, "groupby": True},
@@ -403,10 +404,11 @@ def _table_params(ds_id: int, name_col: str) -> tuple[str, str]:
         "adhoc_filters": [],
         "time_range": "No filter",
         "query_mode": "raw",
-        "columns": [name_col, "description", "record_count"],
+        "columns": ["#", name_col, "description", "record_count"],
         "metrics": [],
         "row_limit": 25,
         "order_desc": False,
+        "timeseries_limit_metric": None,
         "server_pagination": False,
         "align_pn": False,
         "color_pn": False,
@@ -421,10 +423,10 @@ def _table_params(ds_id: int, name_col: str) -> tuple[str, str]:
             "metrics": [],
             "filters": [],
             "row_limit": 25,
-            "orderby": [],
+            "orderby": [["#", True]],
             "extras": {},
             "time_range": "No filter",
-            "columns": [name_col, "description", "record_count"],
+            "columns": ["#", name_col, "description", "record_count"],
             "groupby": [],
         }],
         "result_format": "json",
