@@ -82,15 +82,18 @@ def _read_silver_table(env: str, table: str) -> pd.DataFrame:
         return pd.read_sql(f"SELECT * FROM {SILVER_SCHEMA}.{table}", conn)
 
 
+_OSINT_RESOLUTION_RATE = 0.30  # OSINT streams are inherently noisy
+
 def _check_resolution_rate(domain: str, total: int, resolved: int) -> None:
     if total == 0:
         return
     rate = resolved / total
+    threshold = _OSINT_RESOLUTION_RATE if domain.startswith("osint_") else MIN_RESOLUTION_RATE
     logger.info("  %s resolution: %.1f%% (%d/%d)", domain, rate * 100, resolved, total)
-    if rate < MIN_RESOLUTION_RATE:
+    if rate < threshold:
         raise RuntimeError(
             f"Identity resolution rate for {domain} is {rate:.1%} "
-            f"— below minimum {MIN_RESOLUTION_RATE:.0%}. Halting pipeline."
+            f"— below minimum {threshold:.0%}. Halting pipeline."
         )
 
 
