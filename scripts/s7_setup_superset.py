@@ -388,8 +388,6 @@ def setup_datasets(client: SupersetClient, db_id: int) -> dict[str, int]:
         ]
         client.put(f"/api/v1/dataset/{ds_id}", {"columns": cols})
         logger.info("Registered columns for dataset: %s (id=%d)", name, ds_id)
-            datasets[name] = result["id"]
-            logger.info("Created dataset: %s (id=%d)", name, result["id"])
     return datasets
 
 
