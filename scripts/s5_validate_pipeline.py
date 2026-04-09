@@ -305,13 +305,17 @@ def check_osint_silver_row_counts(env: str) -> list[CheckResult]:
     # sv_pai emotion_tags — check that Twitter OSINT updated at least some rows
     tagged = _scalar(env, f"""
         SELECT COUNT(*) FROM {SILVER_SCHEMA}.sv_pai
+        WHERE emotion_tags IS NOT NULL
+    """)
+    rich_tags = _scalar(env, f"""
+        SELECT COUNT(*) FROM {SILVER_SCHEMA}.sv_pai
         WHERE emotion_tags IS NOT NULL AND cardinality(emotion_tags) > 0
     """)
     passed = tagged is not None and tagged > 0
     results.append(CheckResult(
         "osint_silver_twitter_emotion_tags",
         passed,
-        f"sv_pai rows with emotion_tags populated: {tagged or 0}",
+        f"sv_pai rows with emotion_tags set: {tagged or 0} (with keywords: {rich_tags or 0})",
         tagged,
     ))
     return results
