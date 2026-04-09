@@ -371,13 +371,32 @@ def setup_datasets(client: SupersetClient, db_id: int) -> dict[str, int]:
             datasets[name] = ds_id
             logger.info("Updated existing dataset: %s (id=%d)", name, ds_id)
         else:
-            result = client.post("/api/v1/dataset/", {
+            # Test with trivial SQL first to validate API format
+            test_payload = {
                 "database": db_id,
                 "table_name": name,
-                "schema": "",
-                "sql": sql,
-                "owners": [],
-            })
+                "sql": "SELECT 1 AS test_col",
+            }
+            logger.info("Testing dataset creation with trivial SQL for %s", name)
+            try:
+                result = client.post("/api/v1/dataset/", test_payload)
+                ds_id = result["id"]
+                logger.info("Trivial dataset created (id=%d), updating with real SQL", ds_id)
+                client.put(f"/api/v1/dataset/{ds_id}", {"sql": sql})
+                datasets[name] = ds_id
+                logger.info("Updated dataset %s with catalog SQL (id=%d)", name, ds_id)
+                continue
+            except Exception as e1:
+                logger.error("Trivial SQL also failed: %s", e1)
+                # Try physical table approach
+                logger.info("Trying physical table approach for %s", name)
+                result = client.post("/api/v1/dataset/", {
+                    "database": db_id,
+                    "table_name": "insider_threat_gold.gold_composite_risk",
+                    "schema": "insider_threat_gold",
+                })
+                logger.info("Physical table result: %s", result)
+                raise
             datasets[name] = result["id"]
             logger.info("Created dataset: %s (id=%d)", name, result["id"])
     return datasets
