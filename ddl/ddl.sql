@@ -13,7 +13,7 @@
 --   mkdir -p $PXF_BASE/servers/minio
 --   cp <project>/config/pxf-minio-server/s3-site.xml $PXF_BASE/servers/minio/
 --   pxf cluster sync
---   psql -d gpadmin -c "CREATE EXTENSION pxf;"
+--   psql -d $GP_DB -c "CREATE EXTENSION pxf;"
 -- =============================================================================
 
 

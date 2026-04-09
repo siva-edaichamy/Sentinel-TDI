@@ -1,7 +1,7 @@
 -- madlib_train.sql — MADlib k-means training (canonical)
 -- MADlib 2.2.0: kmeanspp() returns a result row — store via CREATE TABLE AS
--- Prerequisite: GRANT USAGE ON SCHEMA madlib TO gpadmin;
---               GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA madlib TO gpadmin;
+-- Prerequisite: GRANT USAGE ON SCHEMA madlib TO <your_gp_user>;
+--               GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA madlib TO <your_gp_user>;
 
 -- Drop prior model output
 DROP TABLE IF EXISTS insider_threat_gold.gd_kmeans_output;

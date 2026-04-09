@@ -56,7 +56,7 @@ BRONZE_DIR     = _PROJECT_ROOT / "data" / "bronze"
 
 # MinIO / S3 config
 MINIO_ENDPOINT  = os.getenv("MINIO_ENDPOINT", "http://localhost:9000")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "REDACTED_ACCESS_KEY")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "")
 MINIO_BUCKET    = os.getenv("MINIO_BUCKET", "sentinel-bronze")
 MINIO_REGION    = os.getenv("MINIO_REGION", "us-east-1")

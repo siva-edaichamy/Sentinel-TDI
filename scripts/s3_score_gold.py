@@ -1084,8 +1084,8 @@ def run(dry_run: bool = False, env: str = "local", log_level: str = "INFO") -> d
                 features["anomaly_score"] = features["anomaly_score"].fillna(0.0)
             else:
                 logger.warning(
-                    "MADlib not accessible for gpadmin — falling back to sklearn KMeans. "
-                    "Grant: GRANT USAGE ON SCHEMA madlib TO gpadmin; to enable MADlib."
+                    "MADlib not accessible for current user — falling back to sklearn KMeans. "
+                    "Grant: GRANT USAGE ON SCHEMA madlib TO <your_gp_user>; to enable MADlib."
                 )
                 scores = _sklearn_kmeans(feat_matrix, features)
                 features["cluster_id"]    = scores["cluster_id"].values
