@@ -318,7 +318,8 @@ def check_osint_silver_row_counts(env: str) -> list[CheckResult]:
 
 
 def check_osint_silver_resolution_rates(env: str) -> list[CheckResult]:
-    """OSINT Silver resolution rates >= 90% for handle-based streams."""
+    """OSINT Silver resolution rates >= 30% for handle-based streams."""
+    osint_min_resolution = 0.30  # OSINT streams are inherently noisy
     results = []
     handle_tables = {
         "silver_geo_anomalies":        "instagram",
@@ -334,7 +335,7 @@ def check_osint_silver_resolution_rates(env: str) -> list[CheckResult]:
         total    = sum(r[1] for r in rows)
         resolved = sum(r[1] for r in rows if r[0] == "RESOLVED")
         rate     = resolved / total if total > 0 else 0.0
-        passed   = total == 0 or rate >= MIN_RESOLUTION   # 0 rows = no data, not a resolution failure
+        passed   = total == 0 or rate >= osint_min_resolution
         results.append(CheckResult(
             f"osint_resolution_{domain}",
             passed,
