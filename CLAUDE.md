@@ -189,7 +189,8 @@ attachment_flag, attachment_size_mb, after_hours_flag
 
 `sv_pai`:
 ```
-platform, sentiment_score, post_count, engagement_count
+platform, sentiment_score, post_count, engagement_count,
+emotion_tags, keyword_flags
 ```
 
 `sv_geo`:
@@ -311,37 +312,28 @@ scored_at                  TIMESTAMPTZ    NOT NULL
 ## Airflow DAG Design
 
 **File:** `dags/insider_threat_dag.py`
-**API:** TaskFlow API (`@task` decorators)
-**Schedule:** `@daily` — processes prior day's Bronze events
+**API:** TaskFlow API (`@task` decorators, `expand_kwargs` for parallel Silver)
+**Schedule:** `@daily`
 
 ```
-bronze_generate
-      │
-      ├── silver_resolve_pacs
-      ├── silver_resolve_network
-      ├── silver_resolve_dlp
-      ├── silver_resolve_comms
-      ├── silver_resolve_pai
-      ├── silver_resolve_geo
-      ├── silver_resolve_adjudication
-      └── silver_resolve_hris
-            │
-            └── gold_derive_features
-                      │
-                      └── gold_madlib_train_score
-                                │
-                                └── gold_validate
-                                          │
-                                          └── analytics_refresh
+s1_generate (Bronze: 8 internal + 5 OSINT streams)
+  └── s2_resolve_domain × 8 (internal Silver, parallel)
+        └── s2_collect_internal (fan-in)
+              └── s2_resolve_domain × 5 (OSINT Silver, parallel)
+                    └── s3_score (internal MADlib + 5 OSINT Gold tables + composite)
+                          └── s5_validate
+                                └── s6_report
 ```
 
-Silver resolution tasks run in parallel after Bronze completes.
-Gold tasks are strictly sequential — features before scoring.
+Internal Silver domains run in parallel after Bronze. OSINT Silver runs after
+internal Silver completes (osint_lifestyle joins sv_hris). Gold runs after all
+13 Silver domains are populated.
 
 Each task must:
 - Log input row count on entry, output row count on exit
 - Write a lineage record to `insider_threat_bronze.pipeline_runs`
-- Raise `AirflowException` if identity resolution rate falls below 90%
+- Raise `AirflowException` if identity resolution rate falls below threshold
+  (90% for internal domains, 30% for OSINT domains)
 - Raise `AirflowException` if output row count is zero
 
 ---
@@ -357,7 +349,7 @@ DISTRIBUTED BY (employee_id)
 Gold table additionally partitioned:
 ```sql
 PARTITION BY RANGE (window_end_date)
-(START ('2024-01-01') END ('2025-01-01') EVERY (INTERVAL '1 month'))
+(START ('2026-01-01') END ('2027-01-01') EVERY (INTERVAL '1 month'))
 ```
 
 All timestamp columns: `TIMESTAMP WITH TIME ZONE`
@@ -439,7 +431,7 @@ python s6_report_analytics.py
 
 ---
 
-## Validation Targets (Agent 5)
+## Validation Targets
 
 | Check | Target |
 |---|---|
@@ -500,9 +492,9 @@ Bronze → Silver → Gold medallion pattern.
 
 ### DDL
 
-`ddl/ddl_osint.sql` — run after `ddl.sql`. Adds:
+All OSINT DDL is consolidated in `ddl/ddl.sql` alongside internal tables:
 - 5 Bronze regular tables + 5 ext_* PXF external tables (path: `bronze/osint/`)
-- ALTER TABLE sv_pai: adds `emotion_tags TEXT[]` and `keyword_flags TEXT[]`
+- sv_pai includes `emotion_tags TEXT[]` and `keyword_flags TEXT[]` natively
 - 4 new Silver tables + 5 Gold stream tables + `gold_composite_risk`
 
 ### Bronze OSINT Streams
@@ -584,7 +576,6 @@ s1_generate (Bronze: 12 internal + 5 OSINT streams)
 ## Out of Scope (This Phase)
 
 - Generative AI / RAG explanation layer (future Sovereign AI phase)
-- Runnable SCDF streaming pipelines (reference artifacts only this phase)
-- Frontend dashboard
+- Frontend dashboard (Superset catalog setup via s7_setup_superset.py)
 - Supervised ML or any labeled training sets
 - Integration with live external data sources

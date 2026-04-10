@@ -97,7 +97,7 @@ def close_all_pools() -> None:
 def test_connection(env: str = "local") -> bool:
     """
     Smoke-test the connection. Returns True on success, raises on failure.
-    Agents call this at startup to fail fast before doing any work.
+    Pipeline stages call this at startup to fail fast before doing any work.
     """
     with get_connection(env) as conn:
         with conn.cursor() as cur:

@@ -25,7 +25,7 @@ Gold (Greenplum + MADlib)
     MADlib kmeanspp anomaly scoring — distance from centroid = risk score
 ```
 
-Airflow TaskFlow DAG runs daily: Bronze → 8 parallel Silver tasks → Gold → Validate → Report.
+Airflow TaskFlow DAG runs daily: Bronze → 8 parallel internal Silver → fan-in → 5 parallel OSINT Silver → Gold (MADlib + OSINT stream scoring) → Validate → Report.
 
 ---
 
@@ -196,7 +196,7 @@ Gold-layer scoring runs inside Greenplum — no external model server required.
 ## Directory structure
 
 ```
-scripts/         Pipeline scripts (s0–s6) + generate_osint_streams.py
+scripts/         Pipeline scripts (s1, s2, s3, s5, s6, s7) + generate_osint_streams.py + db.py
 config/          PXF server config templates
 dags/            Airflow TaskFlow DAG
 data/
@@ -205,8 +205,7 @@ data/
   silver/        Parquet outputs per domain (gitignored)
   gold/          Parquet risk feature table (gitignored)
 ddl/
-  ddl.sql        Greenplum DDL — Bronze, Silver, Gold (internal)
-  ddl_osint.sql  Greenplum DDL — Bronze, Silver, Gold (OSINT augmentation)
+  ddl.sql        All Greenplum DDL — Bronze, Silver, Gold (internal + OSINT)
 reports/         Generated validation and analytics reports (gitignored)
 sql/             MADlib training and scoring SQL
 schema/          Generated schema documentation (gitignored)

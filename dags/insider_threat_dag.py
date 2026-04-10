@@ -59,7 +59,7 @@ def _check(result: dict, stage: str) -> None:
             f"{stage} failed: rows_in={result.get('rows_in')} "
             f"rows_out={result.get('rows_out')} artifacts={result.get('artifacts')}"
         )
-    if result.get("rows_out", 0) == 0 and stage not in ("s4_build_platform", "s6_report_analytics"):
+    if result.get("rows_out", 0) == 0 and stage not in ("s6_report_analytics",):
         raise AirflowException(f"{stage} produced zero output rows — aborting.")
 
 
