@@ -43,7 +43,7 @@ Airflow TaskFlow DAG runs daily: Bronze → 8 parallel internal Silver → fan-i
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/Sentinel-TDI.git
+git clone https://github.com/siva-edaichamy/Sentinel-TDI.git
 cd Sentinel-TDI
 ```
 
@@ -72,6 +72,11 @@ MINIO_ENDPOINT=http://<minio-host>:9000
 MINIO_ACCESS_KEY=<access-key>
 MINIO_SECRET_KEY=<secret-key>
 MINIO_BUCKET=sentinel-bronze
+
+# Optional — only needed for s7_setup_superset.py
+SUPERSET_URL=http://<superset-host>:8088
+SUPERSET_USER=<superset-admin>
+SUPERSET_PASSWORD=<superset-password>
 ```
 
 ### 4. Configure PXF for MinIO
@@ -151,6 +156,7 @@ python s2_transform_silver.py    # Resolve identities → load Silver tables in 
 python s3_score_gold.py          # Derive features + MADlib scoring → Gold tables
 python s5_validate_pipeline.py   # Run validation checks and lineage report
 python s6_report_analytics.py    # Generate executive analytics report
+python s7_setup_superset.py      # Set up Superset catalog dashboard (requires Superset env vars)
 ```
 
 ---
@@ -161,10 +167,11 @@ python s6_report_analytics.py    # Generate executive analytics report
 |---|---|---|
 | `s1_generate_raw.py` | Bronze | Generates synthetic events for 8 internal domains + 5 OSINT streams (500 employees, 90-day timeline), uploads to MinIO |
 | `generate_osint_streams.py` | Bronze | OSINT sub-generator called by s1 — Twitter, Instagram, Lifestyle, Financial Stress, Dark Web |
-| `s2_transform_silver.py` | Silver | Resolves source identifiers to `employee_id`, loads 8 internal + 4 OSINT Silver tables in Greenplum |
+| `s2_transform_silver.py` | Silver | Resolves source identifiers to `employee_id`, loads 8 internal + 5 OSINT Silver tables in Greenplum |
 | `s3_score_gold.py` | Gold | Joins Silver domains, derives behavioral features, runs MADlib kmeanspp; also scores 5 OSINT Gold stream tables + composite |
 | `s5_validate_pipeline.py` | QA | Checks coverage, identity resolution rates, null rates, cluster distribution, and OSINT stream table populations |
 | `s6_report_analytics.py` | Report | Writes executive analytics and validation reports to `reports/` |
+| `s7_setup_superset.py` | Dashboard | Creates Superset catalog dashboard with Bronze/Silver/Gold source tables, descriptions, and row counts |
 
 ### OSINT Augmentation (5 external behavioral streams)
 
@@ -190,6 +197,17 @@ Gold-layer scoring runs inside Greenplum — no external model server required.
 - **Training:** `sql/madlib_train.sql` — k-means++ on normalized 9-feature vectors
 - **Scoring:** `sql/madlib_score.sql` — distance from assigned centroid = anomaly score
 - **Tiers:** TOP 5% → HIGH, 75th–95th percentile → MEDIUM, below → LOW
+
+---
+
+## Superset dashboard
+
+After the pipeline completes, run `s7_setup_superset.py` to create a three-column
+catalog dashboard in Apache Superset. It shows all Bronze sources, Silver domain
+tables, and Gold risk tables with descriptions and live row counts — sorted by
+signal priority.
+
+Requires `SUPERSET_URL`, `SUPERSET_USER`, and `SUPERSET_PASSWORD` in `.env`.
 
 ---
 
