@@ -99,7 +99,7 @@ Also generates reference/mapping tables that Silver uses for identity resolution
 | `asset_assignment.csv` | CSV | `machine_id → employee_id` with effective_start, effective_end dates |
 | `badge_registry.csv` | CSV | `badge_id → employee_id` |
 | `directory.csv` | CSV | `email_address, slack_handle → employee_id` |
-| `social_handle_map.csv` | CSV | `social_handle → employee_id` — include ~5% unmapped handles for realism |
+| `social_handle_map.csv` | CSV | `social_handle → employee_id` — multi-platform: twitter (100%), instagram (~70%), linkedin (~50%). ~5% unmapped ghost handles for realism |
 
 #### Synthetic Data Characteristics
 
@@ -436,7 +436,7 @@ python s6_report_analytics.py
 | Check | Target |
 |---|---|
 | Employee coverage in Gold | All 500 EMP IDs present |
-| Silver identity resolution rate | ≥ 90% per domain |
+| Silver identity resolution rate | ≥ 90% internal, ≥ 30% OSINT domains |
 | Unresolved records | Written to `sv_unresolved_events`, count reported |
 | Timeline coverage | 90-day window, no gaps for active employees |
 | Gold window coverage | Every employee has ≥ 12 rolling windows |
@@ -456,14 +456,22 @@ python s6_report_analytics.py
 
 ```python
 import os
-RANDOM_SEED    = int(os.getenv("RANDOM_SEED", 42))
-EMPLOYEE_COUNT = int(os.getenv("EMPLOYEE_COUNT", 500))
-TIMELINE_DAYS  = int(os.getenv("TIMELINE_DAYS", 90))
-GP_HOST        = os.getenv("GP_HOST", "localhost")
-GP_PORT        = int(os.getenv("GP_PORT", 5432))
-GP_DB          = os.getenv("GP_DB", "gpadmin")
-GP_USER        = os.getenv("GP_USER", "gpadmin")
-GP_PASSWORD    = os.getenv("GP_PASSWORD", "")
+RANDOM_SEED          = int(os.getenv("RANDOM_SEED", 42))
+EMPLOYEE_COUNT       = int(os.getenv("EMPLOYEE_COUNT", 500))
+TIMELINE_DAYS        = int(os.getenv("TIMELINE_DAYS", 90))
+TIMELINE_START_DATE  = os.getenv("TIMELINE_START_DATE", "2026-01-01")
+GP_HOST              = os.getenv("GP_HOST", "localhost")
+GP_PORT              = int(os.getenv("GP_PORT", 5432))
+GP_DB                = os.getenv("GP_DB", "gpadmin")
+GP_USER              = os.getenv("GP_USER", "gpadmin")
+GP_PASSWORD          = os.getenv("GP_PASSWORD", "")
+MINIO_ENDPOINT       = os.getenv("MINIO_ENDPOINT", "http://localhost:9000")
+MINIO_ACCESS_KEY     = os.getenv("MINIO_ACCESS_KEY", "")
+MINIO_SECRET_KEY     = os.getenv("MINIO_SECRET_KEY", "")
+MINIO_BUCKET         = os.getenv("MINIO_BUCKET", "sentinel-bronze")
+SUPERSET_URL         = os.getenv("SUPERSET_URL")         # s7 only
+SUPERSET_USER        = os.getenv("SUPERSET_USER")        # s7 only
+SUPERSET_PASSWORD    = os.getenv("SUPERSET_PASSWORD")    # s7 only
 ```
 
 - No hardcoded file paths — use `pathlib.Path` relative to project root
@@ -517,6 +525,33 @@ All OSINT DDL is consolidated in `ddl/ddl.sql` alongside internal tables:
 | silver_financial_stress | direct (employee_id native) | record_type, amount_usd, stress_score, cumulative_stress_score |
 | silver_darkweb_signals | email → directory OR social_handle → social_handle_map | signal_type, severity, confidence_score, matched_on |
 
+### OSINT Silver Resolution Patterns
+
+**Twitter (sv_pai UPDATE):** Twitter OSINT does NOT insert new rows. It UPDATEs
+existing sv_pai rows (already populated by the internal PAI resolver) to add
+`emotion_tags` and `keyword_flags` via ILIKE pattern matching on tweet text.
+Uses `skip_truncate=True` in the resolver to prevent clearing sv_pai before
+the UPDATE. Emotion patterns: frustration, grievance, disengagement, distress,
+hostility. Keyword patterns: sensitive_terms, financial_stress, employment_concern,
+job_seeking.
+
+**Dark web (dual-path resolution):** Resolves via two paths ORed together:
+`email → directory` OR `social_handle → social_handle_map`. Uses LEFT JOIN on
+both, COALESCE for employee_id. `matched_on` column tracks which identifier
+resolved the record. Inherently noisy — many signals won't match.
+
+**Lifestyle (salary band join):** Joins `sv_hris` for salary_band derivation.
+Incongruity score = `estimated_value_usd / salary_band_baseline` where baselines
+are senior=5000, mid=2000, low=1000. Must run AFTER internal Silver completes.
+
+**Resolution thresholds:** Internal domains require ≥90% resolution rate.
+OSINT domains require ≥30% (triggered by `domain.startswith("osint_")`).
+Below threshold raises RuntimeError and halts the pipeline.
+
+**Asset assignment (shared machines):** Network and DLP use ROW_NUMBER()
+partitioned by machine_id, ordered by effective_start DESC NULLS LAST —
+most recent assignment wins for identity resolution.
+
 ### Gold OSINT Stream Tables
 
 | Table | Grain | Key Score |
@@ -528,20 +563,45 @@ All OSINT DDL is consolidated in `ddl/ddl.sql` alongside internal tables:
 | gold_darkweb_risk | employee + week_start_date | darkweb_risk_score (0-1) |
 | gold_composite_risk | employee + week_start_date | composite_risk_score (0-1), risk_tier, recommended_action |
 
+### Gold Scoring Formulas
+
+Each OSINT Gold stream produces a 0–1 risk score per employee per week.
+
+**Twitter risk:** Rolling sentiment trend vs 30-day baseline + primary emotion tag.
+**Location risk:** `SUM(anomaly_flag) / COUNT(*)` from silver_geo_anomalies.
+**Lifestyle risk:** `MAX(incongruity_score)` clamped to [0, 1].
+**Financial risk:** `MAX(cumulative_stress_score)` clamped to [0, 1].
+**Dark web risk:** `LEAST(1.0, COUNT(*) * 0.15 + MAX(severity_numeric))` where
+severity_numeric: high=0.60, medium=0.30, low=0.10.
+**Internal behavioral:** `AVG(anomaly_percentile / 100.0)` from employee_risk_features.
+
 ### Composite Risk Weights
 
+All stream scores are [0, 1]. Weights sum to 1.0:
+
 ```
-internal_behavioral = 0.25
-financial_stress    = 0.18
+internal_behavioral = 0.25    # foundational MADlib signal
+financial_stress    = 0.18    # strongest motive indicator
 twitter_sentiment   = 0.15
 lifestyle           = 0.15
-dark_web            = 0.15
-location            = 0.12
+dark_web            = 0.15    # risk amplifier + access vector
+location            = 0.12    # corroborating, rarely standalone
 ```
+
+**Risk tiers:** CRITICAL ≥0.75, HIGH ≥0.50, MEDIUM ≥0.25, LOW <0.25.
+**Recommended actions:** ESCALATE, INVESTIGATE, MONITOR, ROUTINE.
 
 ### Behavioral Realism — Lead/Lag Timeline (90-day window)
 
-Threat actor cohort: 25 employees (deterministic — same `np.random.default_rng(42).choice(500, size=25)`)
+Threat actor cohort: 25 employees, deterministic via
+`np.random.default_rng(RANDOM_SEED).choice(EMPLOYEE_COUNT, size=25, replace=False)`.
+Same seed produces identical cohort in s1_generate_raw and generate_osint_streams.
+Each OSINT generator uses a seed offset (+100 twitter, +200 instagram, +300 lifestyle,
++400 financial, +500 darkweb) for independent but reproducible streams.
+
+Tweet sentiment phases for threat actors: days 1–24 benign (0.2–0.9), days 25–50
+subtle decline (-0.1–0.2), days 50–65 frustration (-0.4–0.0), days 65+ critical
+(-0.9– -0.4). Non-threat employees always positive (0.2–0.9).
 
 | Days | Signal Active |
 |---|---|
@@ -573,9 +633,33 @@ s1_generate (Bronze: 12 internal + 5 OSINT streams)
 
 ---
 
+## Superset Dashboard (`s7_setup_superset.py`)
+
+Creates a three-column catalog dashboard in Apache Superset showing Bronze
+sources, Silver domain tables, and Gold risk tables with row counts and
+descriptions. Priority-sorted by signal importance.
+
+**Approach:** Superset 3.x rejects complex SQL (subqueries, UNION ALL with
+COUNT) in virtual datasets. The script creates **physical catalog tables** in
+Greenplum (`dashboard_bronze_catalog`, `dashboard_silver_catalog`,
+`dashboard_gold_catalog`) via `CREATE TABLE AS` with the UNION ALL query,
+then registers them as physical table datasets in Superset.
+
+**Steps:** Teardown → Register GP database → Create catalog tables in GP →
+Register datasets → Create table charts → Create dashboard.
+
+## Airflow DAG Implementation Notes
+
+The DAG uses `expand_kwargs` to parallelize Silver domains. The `upstream_result`
+parameter in `s2_resolve_domain` is a dependency hook only — its value is not
+used, but passing it forces Airflow to schedule the task after the upstream
+completes. `s2_collect_internal` is a fan-in task that waits for all 8 internal
+Silver domains before OSINT Silver starts.
+
+---
+
 ## Out of Scope (This Phase)
 
 - Generative AI / RAG explanation layer (future Sovereign AI phase)
-- Frontend dashboard (Superset catalog setup via s7_setup_superset.py)
 - Supervised ML or any labeled training sets
 - Integration with live external data sources
